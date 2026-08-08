@@ -79,7 +79,7 @@ def _flash_firmware(
                 loader_address=loader_address,
                 progress_callback=progress_callback,
             )
-            
+
             try:
                 # 释放旧设备资源，刷新 USB 设备列表
                 dev.reset()  # Reset the device to clear any state

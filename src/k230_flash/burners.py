@@ -87,7 +87,7 @@ MAX_DATA_SIZE = PACKET_SIZE - HEADER_SIZE  # 54 bytes
 
 KBURN_RESULT_OK = 0x1
 
-REBOOT_MARK=0x52626F74
+REBOOT_MARK = 0x52626F74
 
 
 def do_sleep(ms):
@@ -125,9 +125,7 @@ class KBurner:
             logger.info(f"Progress: {percent:.2f}% ({current}/{total})")
 
     def write(self, data, address):
-        raise NotImplementedError(
-            "The write method must be implemented in a derived class"
-        )
+        raise NotImplementedError("The write method must be implemented in a derived class")
 
 
 class K230BROMBurner(KBurner):
@@ -145,9 +143,7 @@ class K230BROMBurner(KBurner):
         addr_low = address & 0xFFFF
         try:
             ret = self.dev.ctrl_transfer(
-                bmRequestType=usb.util.CTRL_OUT
-                | usb.util.CTRL_TYPE_VENDOR
-                | usb.util.CTRL_RECIPIENT_DEVICE,
+                bmRequestType=usb.util.CTRL_OUT | usb.util.CTRL_TYPE_VENDOR | usb.util.CTRL_RECIPIENT_DEVICE,
                 bRequest=EP0_PROG_START,
                 wValue=addr_high,
                 wIndex=addr_low,
@@ -157,15 +153,11 @@ class K230BROMBurner(KBurner):
             logger.debug(f"boot_from: return value {ret}")
         except usb.core.USBError as e:
             logger.error(f"boot_from failed: {e}")
-            raise USBCommunicationError(
-                f"启动Loader失败，地址: {hex(address)}, 错误: {e}"
-            )
+            raise USBCommunicationError(f"启动Loader失败，地址: {hex(address)}, 错误: {e}")
 
     def get_loader_path(self, filename):
         """Get the path of the bin file in the `loaders` directory"""
-        return str(
-            importlib.resources.files("k230_flash").joinpath("loaders", filename)
-        )
+        return str(importlib.resources.files("k230_flash").joinpath("loaders", filename))
 
     def get_loader(self, media_type="EMMC"):
         # Select different built-in loaders according to media_type
@@ -199,9 +191,7 @@ class K230BROMBurner(KBurner):
         addr_low = address & 0xFFFF
         try:
             ret = self.dev.ctrl_transfer(
-                bmRequestType=usb.util.CTRL_OUT
-                | usb.util.CTRL_TYPE_VENDOR
-                | usb.util.CTRL_RECIPIENT_DEVICE,
+                bmRequestType=usb.util.CTRL_OUT | usb.util.CTRL_TYPE_VENDOR | usb.util.CTRL_RECIPIENT_DEVICE,
                 bRequest=EP0_SET_DATA_ADDRESS,
                 wValue=addr_high,
                 wIndex=addr_low,
@@ -211,18 +201,14 @@ class K230BROMBurner(KBurner):
             logger.debug(f"set_data_address: return value {ret}")
         except usb.core.USBError as e:
             logger.error(f"set_data_address failed: {e}")
-            raise USBCommunicationError(
-                f"设置数据地址失败，地址: {hex(address)}, 错误: {e}"
-            )
+            raise USBCommunicationError(f"设置数据地址失败，地址: {hex(address)}, 错误: {e}")
 
     def write_data_chunk(self, chunk):
         try:
             written = self.dev.write(self.ep_out, chunk, timeout=USB_TIMEOUT)
             if written != len(chunk):
                 logger.error("write_data_chunk write length is insufficient")
-                raise DataWriteError(
-                    f"数据块写入长度不足，期望: {len(chunk)}, 实际: {written}"
-                )
+                raise DataWriteError(f"数据块写入长度不足，期望: {len(chunk)}, 实际: {written}")
         except usb.core.USBError as e:
             logger.error(f"write_data_chunk failed: {e}")
             raise USBCommunicationError(f"数据块写入失败: {e}")
@@ -292,9 +278,7 @@ class K230UBOOTBurner(KBurner):
             # Construct configuration data
             cfg_data = struct.pack("<Q", REBOOT_MARK)
             expected_info_size = 0
-            response = self.send_cmd(
-                KBURN_CMD_REBOOT, cfg_data, expected_response_length=expected_info_size
-            )
+            response = self.send_cmd(KBURN_CMD_REBOOT, cfg_data, expected_response_length=expected_info_size)
 
             # 等待设备重启完成
             logger.info("等待设备重启完成...")
@@ -317,9 +301,7 @@ class K230UBOOTBurner(KBurner):
 
     def kburn_nop(self):
         """Send KBURN_CMD_NONE command to clear device error status"""
-        logger.debug(
-            "Sending NOP (KBURN_CMD_NONE) command to clear device error status"
-        )
+        logger.debug("Sending NOP (KBURN_CMD_NONE) command to clear device error status")
 
         # Read the last packet (ignore the return value)
         try:
@@ -335,9 +317,7 @@ class K230UBOOTBurner(KBurner):
         # Check alignment
         if offset % self.blk_sz != 0:
             logger.error("Address not aligned to erase size")
-            raise ValueError(
-                f"地址未对齐到擦除大小，偏移: {offset}, 块大小: {self.blk_sz}"
-            )
+            raise ValueError(f"地址未对齐到擦除大小，偏移: {offset}, 块大小: {self.blk_sz}")
 
         self.kburn_nop()  # Clear device error status
 
@@ -345,9 +325,7 @@ class K230UBOOTBurner(KBurner):
         part_flags = 0x00
         cfg_data = struct.pack("<QQQQ", offset, size, size, part_flags)
         expected_info_size = 8
-        response = self.send_cmd(
-            KBURN_CMD_WRITE_LBA, cfg_data, expected_response_length=expected_info_size
-        )
+        response = self.send_cmd(KBURN_CMD_WRITE_LBA, cfg_data, expected_response_length=expected_info_size)
         if response is None or len(response) != expected_info_size:
             logger.error(
                 f"get_capacity: failed to get valid response, expected {expected_info_size} bytes, got {len(response) if response else None}"
@@ -408,12 +386,8 @@ class K230UBOOTBurner(KBurner):
             try:
                 written = self.dev.write(self.ep_out, chunk, timeout=USB_TIMEOUT)
                 if written != len(chunk):
-                    logger.error(
-                        "Insufficient data block length written in U-Boot mode"
-                    )
-                    raise DataWriteError(
-                        f"U-Boot模式下数据块写入长度不足，期望: {len(chunk)}, 实际: {written}"
-                    )
+                    logger.error("Insufficient data block length written in U-Boot mode")
+                    raise DataWriteError(f"U-Boot模式下数据块写入长度不足，期望: {len(chunk)}, 实际: {written}")
             except usb.core.USBError as e:
                 logger.error(f"Bulk write error: {e}")
                 raise USBCommunicationError(f"批量写入错误: {e}")
@@ -474,9 +448,7 @@ class K230UBOOTBurner(KBurner):
             raise USBCommunicationError(f"响应数据太短: {len(response)} 字节")
 
         # Parse response header: return value result, data area length data_size
-        resp_cmd, resp_result, resp_data_size = struct.unpack(
-            "<HHH", bytes(response[:HEADER_SIZE])
-        )
+        resp_cmd, resp_result, resp_data_size = struct.unpack("<HHH", bytes(response[:HEADER_SIZE]))
         # Check if the response command is correct: should be (cmd | CMD_FLAG_DEV_TO_HOST)
         if resp_cmd != (cmd | CMD_FLAG_DEV_TO_HOST):
             logger.error(
@@ -487,16 +459,12 @@ class K230UBOOTBurner(KBurner):
             )
         if resp_result != KBURN_RESULT_OK and cmd != KBURN_CMD_NONE:
             logger.error(f"send_cmd: response error, result = 0x{resp_result:04X}")
-            raise USBCommunicationError(
-                f"设备响应错误: 0x{resp_result:04X}, 请检查目标存储介质是否存在？"
-            )
+            raise USBCommunicationError(f"设备响应错误: 0x{resp_result:04X}, 请检查目标存储介质是否存在？")
         if resp_data_size != expected_response_length:
             logger.error(
                 f"send_cmd: response data size mismatch, expected {expected_response_length}, got {resp_data_size}"
             )
-            raise USBCommunicationError(
-                f"响应数据长度不匹配: 期望 {expected_response_length}, 实际 {resp_data_size}"
-            )
+            raise USBCommunicationError(f"响应数据长度不匹配: 期望 {expected_response_length}, 实际 {resp_data_size}")
 
         # Return the data area
         mid = response[HEADER_SIZE : HEADER_SIZE + resp_data_size]
@@ -520,20 +488,14 @@ class K230UBOOTBurner(KBurner):
         payload = bytes([self.media_type, 0xFF])
         logger.debug(f"probe: target medium type {self.media_type}")
 
-        response = self.send_cmd(
-            KBURN_CMD_DEV_PROBE, payload, expected_response_length=16
-        )
+        response = self.send_cmd(KBURN_CMD_DEV_PROBE, payload, expected_response_length=16)
         if response is None or len(response) != 16:
             logger.error("probe: failed to get valid response")
-            raise DeviceProbeError(
-                f"设备探测失败，期望响应: 16 字节，实际: {len(response) if response else None}"
-            )
+            raise DeviceProbeError(f"设备探测失败，期望响应: 16 字节，实际: {len(response) if response else None}")
 
         # Parse the 16-byte response into two uint64_t, little-endian
         out_chunk_size, in_chunk_size = struct.unpack("<QQ", response)
-        logger.debug(
-            f"probe: out_chunk_size = {out_chunk_size}, in_chunk_size = {in_chunk_size}"
-        )
+        logger.debug(f"probe: out_chunk_size = {out_chunk_size}, in_chunk_size = {in_chunk_size}")
         self.out_chunk_size = out_chunk_size
         self.in_chunk_size = in_chunk_size
 
@@ -550,9 +512,7 @@ class K230UBOOTBurner(KBurner):
         """
         expected_info_size = 32  # According to the packing format "<QII B"
         try:
-            response = self.send_cmd(
-                KBURN_CMD_DEV_GET_INFO, b"", expected_response_length=expected_info_size
-            )
+            response = self.send_cmd(KBURN_CMD_DEV_GET_INFO, b"", expected_response_length=expected_info_size)
         except (USBCommunicationError, ValueError) as e:
             logger.error(f"get_capacity: 获取设备信息失败: {e}")
             raise DeviceProbeError(f"获取设备容量信息失败: {e}")
@@ -577,9 +537,7 @@ class K230UBOOTBurner(KBurner):
         # The next 1 bit is valid (the remaining 16 bits are unused)
         valid = (bitfields >> 47) & 0x01
 
-        logger.info(
-            f"设备信息: 容量 {capacity // (1024*1024)} MB, 块大小 {blk_sz}, 擦除大小 {erase_size}"
-        )
+        logger.info(f"设备信息: 容量 {capacity // (1024*1024)} MB, 块大小 {blk_sz}, 擦除大小 {erase_size}")
         self.capacity = capacity
         self.blk_sz = blk_sz
         self.erase_size = erase_size
@@ -589,9 +547,7 @@ class K230UBOOTBurner(KBurner):
         return capacity
 
 
-def handle_bootrom_mode(
-    dev, media_type, loader_address, loader_file, progress_callback
-):
+def handle_bootrom_mode(dev, media_type, loader_address, loader_file, progress_callback):
     """处理 BootROM 模式，下载 loader 并启动至 U-Boot"""
     try:
         burner = K230BROMBurner(dev)
@@ -666,11 +622,7 @@ def handle_uboot_mode(
 
         if selected_partitions:
             # Only count selected partitions
-            total_size = sum(
-                item.partSize
-                for item in items.data
-                if item.partName in selected_partitions
-            )
+            total_size = sum(item.partSize for item in items.data if item.partName in selected_partitions)
         else:
             # Count all partitions
             total_size = sum(item.partSize for item in items.data)
@@ -734,9 +686,7 @@ def write_images(addr_filename_pairs, burner):
                 raise FileNotFoundError(f"文件 {filename} 不存在")
             with filename.open("rb") as f:
                 file_data = f.read()
-            logger.info(
-                f"写入文件 {filename} 至地址 {hex(address)}，大小 {len(file_data)} 字节"
-            )
+            logger.info(f"写入文件 {filename} 至地址 {hex(address)}，大小 {len(file_data)} 字节")
             try:
                 burner.write_image(file_data, address)
             except (ValueError, DataWriteError, USBCommunicationError) as e:
