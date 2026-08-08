@@ -42,16 +42,12 @@ def _wait_for_device_ready(device_path=None, timeout_seconds=300, retry_interval
             # 检查是否超时
             if elapsed_time >= timeout_seconds:
                 logger.error(f"等待设备超时 ({timeout_seconds}秒): {device_path}")
-                raise TimeoutError(
-                    f"等待设备 {device_path} 就绪超时，已等待 {timeout_seconds} 秒"
-                )
+                raise TimeoutError(f"等待设备 {device_path} 就绪超时，已等待 {timeout_seconds} 秒")
 
             # 每30秒或前几次重试时输出等待信息
             if retry_count <= 3 or retry_count % 15 == 0:
                 remaining_time = timeout_seconds - elapsed_time
-                logger.info(
-                    f"设备 {device_path} 暂未就绪，继续等待... (剩余 {remaining_time:.0f}秒)"
-                )
+                logger.info(f"设备 {device_path} 暂未就绪，继续等待... (剩余 {remaining_time:.0f}秒)")
 
             # 等待后重试
             time.sleep(retry_interval)
@@ -120,11 +116,7 @@ def main(args_list=None, progress_callback=None, use_external_logging=False):
         )
 
         # Refactored logic to call API functions
-        if (
-            args.kdimg_file
-            and hasattr(args, "kdimg_selected_partitions")
-            and args.kdimg_selected_partitions
-        ):
+        if args.kdimg_file and hasattr(args, "kdimg_selected_partitions") and args.kdimg_selected_partitions:
             # Mode 3: kdimg file with selected partitions
             api.flash_kdimg(
                 kdimg_file=args.kdimg_file,
@@ -139,9 +131,7 @@ def main(args_list=None, progress_callback=None, use_external_logging=False):
             )
         elif args.kdimg_file and args.addr_filename_pairs:
             # This should not happen with the corrected arg_parser, but keep for safety
-            logger.warning(
-                "Unexpected combination: kdimg_file with addr_filename_pairs. Using kdimg mode."
-            )
+            logger.warning("Unexpected combination: kdimg_file with addr_filename_pairs. Using kdimg mode.")
             api.flash_kdimg(
                 kdimg_file=args.kdimg_file,
                 port_path=args.device_path,
@@ -180,9 +170,7 @@ def main(args_list=None, progress_callback=None, use_external_logging=False):
     except SystemExit:
         # 在GUI模式下，不重新抛出SystemExit异常，避免程序退出
         if use_external_logging:
-            logger.info(
-                "SystemExit caught in GUI mode, not re-raising to prevent application exit"
-            )
+            logger.info("SystemExit caught in GUI mode, not re-raising to prevent application exit")
         else:
             # 在CLI模式下，重新抛出SystemExit异常
             raise
