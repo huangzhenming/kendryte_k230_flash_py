@@ -73,7 +73,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install black isort
+      # Pinned to the same versions .pre-commit-config.yaml uses. Installing
+      # unpinned drifts: black's formatting changes between releases, so CI and
+      # the commit hook disagreed and this job failed on code the hook had just
+      # accepted. One source of truth -- change both together.
+      - run: pip install "black==24.4.0" "isort==5.13.2"
       # Scoped to the package and the tests on purpose. src/gui/ holds gigabytes
       # of gitignored PyInstaller output on a dev machine, and walking it makes
       # these take minutes; its sources were also never black-formatted, so
