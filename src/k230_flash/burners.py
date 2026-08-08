@@ -1,5 +1,6 @@
 # burners.py
 import importlib.resources
+import io
 import struct
 import time
 from pathlib import Path
@@ -20,7 +21,6 @@ from .usb_utils import (
     KBURN_USB_DEV_UBOOT,
     USB_TIMEOUT,
     list_usb_devices,
-    refresh_pyusb_after_reboot,
 )
 
 
@@ -89,6 +89,15 @@ KBURN_RESULT_OK = 0x1
 
 REBOOT_MARK = 0x52626F74
 
+# Command round trips are quick; bulk payload chunks are not, because the gadget
+# writes each chunk to the medium synchronously before accepting the next one, so
+# a 128 KiB chunk can stall behind a slow SD/NAND write. A spurious timeout mid
+# stream desynchronises the whole transfer, so these are deliberately generous.
+DATA_TIMEOUT = 15000  # ms, per bulk payload chunk
+WRITE_ACK_TIMEOUT = 30000  # ms, final "WRITE DONE" after the last chunk is committed
+DRAIN_TIMEOUT = 50  # ms, per stale packet when resynchronising
+MAX_DRAIN_PACKETS = 4
+
 
 def do_sleep(ms):
     time.sleep(ms / 1000.0)
@@ -103,16 +112,29 @@ class KBurner:
         self.ep_out = None
 
     def _discover_endpoints(self):
-        "Dynamically update in/out endpoints"
+        """Read the bulk endpoint pair from the device's active configuration.
+
+        The addresses differ between the two stages -- BootROM exposes OUT 0x01,
+        the U-Boot loader exposes OUT 0x02 -- so they must always be re-read from
+        the descriptor of the device we are actually holding, never assumed nor
+        carried over from before the loader was started.
+        """
         cfg = self.dev.get_active_configuration()
         for interface in cfg:
             for endpoint in interface:
-                if endpoint.bEndpointAddress & 0x80:  # Check if IN endpoint
-                    self.ep_in = endpoint.bEndpointAddress
-                    logger.debug(f"Updated IN endpoint: {hex(self.ep_in)}")
-                else:  # OUT endpoint
+                if usb.util.endpoint_type(endpoint.bmAttributes) != usb.util.ENDPOINT_TYPE_BULK:
+                    continue
+                if usb.util.endpoint_direction(endpoint.bEndpointAddress) == usb.util.ENDPOINT_IN:
+                    if self.ep_in is None:
+                        self.ep_in = endpoint.bEndpointAddress
+                elif self.ep_out is None:
                     self.ep_out = endpoint.bEndpointAddress
-                    logger.debug(f"Updated OUT endpoint: {hex(self.ep_out)}")
+
+        if self.ep_in is None or self.ep_out is None:
+            raise DeviceConfigurationError(
+                f"未能找到完整的 Bulk 端点对 (IN={self.ep_in}, OUT={self.ep_out})，" "设备可能仍在重新枚举"
+            )
+        logger.debug(f"Bulk endpoints: IN={hex(self.ep_in)} OUT={hex(self.ep_out)}")
 
     def set_progress_callback(self, callback):
         self.progress_callback = callback
@@ -303,11 +325,15 @@ class K230UBOOTBurner(KBurner):
         """Send KBURN_CMD_NONE command to clear device error status"""
         logger.debug("Sending NOP (KBURN_CMD_NONE) command to clear device error status")
 
-        # Read the last packet (ignore the return value)
-        try:
-            _ = self.dev.read(self.ep_in, PACKET_SIZE, timeout=1000)
-        except usb.core.USBError:
-            pass  # Ignore possible timeout errors
+        # Drain anything the device may still have queued. Now that every command
+        # response is consumed by its issuer (see write_end) this normally finds
+        # nothing, so the timeout is short -- it used to be 1s and was paid on
+        # every partition as well as on every probe.
+        for _ in range(MAX_DRAIN_PACKETS):
+            try:
+                self.dev.read(self.ep_in, PACKET_SIZE, timeout=DRAIN_TIMEOUT)
+            except usb.core.USBError:
+                break
 
         # Send KBURN_CMD_NONE
         response = self.send_cmd(KBURN_CMD_NONE, b"", expected_response_length=16)
@@ -337,20 +363,28 @@ class K230UBOOTBurner(KBurner):
 
     def write_chunks(self, data: bytes) -> bool:
         """Write data chunks"""
+        return self.write_chunks_from(io.BytesIO(data), len(data))
+
+    def write_chunks_from(self, stream, total_size: int) -> bool:
+        """Stream `total_size` bytes from `stream` to the device's OUT endpoint.
+
+        Reading a chunk at a time keeps peak memory at one chunk instead of the
+        whole image, which matters for the multi-GB single-file case.
+        """
+        chunk_size = self.out_chunk_size
+        bytes_sent = 0
         try:
-            total_size = len(data)
-            bytes_sent = 0
-            # Automatically handle ZLP
-            chunk_size = self.out_chunk_size
-            for i in range(0, len(data), chunk_size):
-                chunk = data[i : i + chunk_size]
-                self.dev.write(self.ep_out, chunk, timeout=1000)
+            while bytes_sent < total_size:
+                chunk = stream.read(min(chunk_size, total_size - bytes_sent))
+                if not chunk:
+                    raise DataWriteError(f"数据源提前结束: 已发送 {bytes_sent}/{total_size} 字节")
+                self.dev.write(self.ep_out, chunk, timeout=DATA_TIMEOUT)
                 bytes_sent += len(chunk)
                 self.log_progress(bytes_sent, total_size)
 
             # Send zero-length packet (if needed)
-            if len(data) % chunk_size == 0:
-                self.dev.write(self.ep_out, b"", timeout=1000)
+            if total_size % chunk_size == 0:
+                self.dev.write(self.ep_out, b"", timeout=DATA_TIMEOUT)
 
             return True
         except usb.core.USBError as e:
@@ -358,9 +392,49 @@ class K230UBOOTBurner(KBurner):
             raise USBCommunicationError(f"数据块写入失败: {e}")
 
     def write_end(self) -> bool:
-        """Complete write operation"""
+        """Consume and verify the device's end-of-write acknowledgement.
 
+        The gadget replies "WRITE DONE" once it has committed every byte it was
+        promised, or "WRITE ERROR, 0x.." if a medium write failed. This used to
+        be a no-op, which meant two things: a failed write was reported to the
+        caller as a success, and the unread packet left the response pipe one
+        step out of sync for the next command.
+        """
+        try:
+            response = self.dev.read(self.ep_in, PACKET_SIZE, timeout=WRITE_ACK_TIMEOUT)
+        except usb.core.USBError as e:
+            logger.error(f"write_end: no completion response: {e}")
+            raise DataWriteError(f"未收到写入完成应答: {e}")
+
+        if len(response) < HEADER_SIZE:
+            raise DataWriteError(f"写入完成应答长度异常: {len(response)} 字节")
+
+        resp_cmd, resp_result, resp_size = struct.unpack("<HHH", bytes(response[:HEADER_SIZE]))
+        message = bytes(response[HEADER_SIZE : HEADER_SIZE + resp_size]).decode("utf-8", errors="ignore")
+
+        if resp_cmd != (KBURN_CMD_WRITE_LBA | CMD_FLAG_DEV_TO_HOST):
+            raise DataWriteError(
+                f"写入完成应答命令不匹配: 得到 0x{resp_cmd:04x}, "
+                f"期望 0x{(KBURN_CMD_WRITE_LBA | CMD_FLAG_DEV_TO_HOST):04x}"
+            )
+        if resp_result != KBURN_RESULT_OK:
+            raise DataWriteError(f"设备报告写入失败: {message}")
+
+        logger.debug(f"write_end: {message}")
         return True
+
+    def write_image_stream(self, stream, size: int, offset: int) -> bool:
+        """Write `size` bytes read from `stream` at `offset`."""
+        try:
+            self.write_start(offset, size)
+            self.write_chunks_from(stream, size)
+            return self.write_end()
+        except (ValueError, DataWriteError, USBCommunicationError) as e:
+            logger.error(f"镜像写入失败: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"镜像写入时发生未知错误: {e}")
+            raise DataWriteError(f"镜像写入失败: {e}")
 
     def write_image(self, data: bytes, offset: int) -> bool:
         """Complete write process"""
@@ -452,7 +526,7 @@ class K230UBOOTBurner(KBurner):
         # Check if the response command is correct: should be (cmd | CMD_FLAG_DEV_TO_HOST)
         if resp_cmd != (cmd | CMD_FLAG_DEV_TO_HOST):
             logger.error(
-                f"send_cmd: response cmd mismatch: got 0x{resp_cmd:04x}, expected 0x{(cmd | CMD_FLAG_DEV_TO_HOST)}"
+                f"send_cmd: response cmd mismatch: got 0x{resp_cmd:04x}, expected 0x{(cmd | CMD_FLAG_DEV_TO_HOST):04x}"
             )
             raise USBCommunicationError(
                 f"响应命令不匹配: 得到 0x{resp_cmd:04x}, 期望 0x{(cmd | CMD_FLAG_DEV_TO_HOST):04x}"
@@ -574,8 +648,9 @@ def handle_bootrom_mode(dev, media_type, loader_address, loader_file, progress_c
         except (USBCommunicationError, DataWriteError) as e:
             raise RuntimeError(f"Loader操作失败: {e}")
 
+        # No sleep here on purpose: the caller watches the device leave the bus
+        # and come back, which is both faster and more reliable than guessing.
         logger.info("loader 写入成功，等待设备切换至 U-Boot 模式")
-        time.sleep(0.5)
     except FileNotFoundError as e:
         logger.error(f"文件错误: {e}")
         raise
@@ -605,13 +680,25 @@ def handle_uboot_mode(
 
     try:
         burner.probe()
-    except DeviceProbeError as e:
-        raise RuntimeError(f"U-Boot 模式探测失败: {e}")
+    except (DeviceProbeError, USBCommunicationError) as e:
+        # A probe timeout here is almost always the loader failing to initialise
+        # the storage medium, not a USB problem. cb_probe_device() runs the
+        # medium init synchronously inside the USB completion handler, so when
+        # that init fails the gadget stops servicing BOTH endpoints -- the device
+        # cannot even be sent KBURN_CMD_REBOOT afterwards. Nothing the host does
+        # can recover it, so say so plainly instead of surfacing "read timeout".
+        raise RuntimeError(
+            f"U-Boot 模式探测失败（介质类型 {media_type}）: {e}\n"
+            f"  设备已停止响应，主机侧无法恢复。请依次检查：\n"
+            f"  1) -m/--media-type 是否与实际硬件一致（当前: {media_type}）；\n"
+            f"  2) 存储介质是否插好、是否被写保护；\n"
+            f"  3) 给开发板重新上电后再试 —— loader 的介质初始化失败后必须断电复位。"
+        ) from e
 
     try:
         burner.get_capacity()
-    except DeviceProbeError as e:
-        raise RuntimeError(f"获取设备容量信息失败: {e}")
+    except (DeviceProbeError, USBCommunicationError) as e:
+        raise RuntimeError(f"获取设备容量信息失败: {e}") from e
 
     # --- 新增：计算总大小并记录开始时间 ---
     total_size = 0
@@ -684,11 +771,13 @@ def write_images(addr_filename_pairs, burner):
         try:
             if not filename.exists():
                 raise FileNotFoundError(f"文件 {filename} 不存在")
-            with filename.open("rb") as f:
-                file_data = f.read()
-            logger.info(f"写入文件 {filename} 至地址 {hex(address)}，大小 {len(file_data)} 字节")
+            file_size = filename.stat().st_size
+            logger.info(f"写入文件 {filename} 至地址 {hex(address)}，大小 {file_size} 字节")
             try:
-                burner.write_image(file_data, address)
+                # Streamed rather than read() in full: a full-card .img is easily
+                # multiple GB and there is no reason to hold it all in memory.
+                with filename.open("rb") as f:
+                    burner.write_image_stream(f, file_size, address)
             except (ValueError, DataWriteError, USBCommunicationError) as e:
                 raise RuntimeError(f"写入文件 {filename} 失败: {e}")
         except Exception as e:
