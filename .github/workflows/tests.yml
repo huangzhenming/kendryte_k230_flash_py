@@ -1,0 +1,116 @@
+name: Tests
+
+# Every push to every branch is tested, so a problem shows up while the branch is
+# still being worked on rather than at merge time. build-and-release.yml only
+# fires on version tags, so until now nothing tested a change before it shipped.
+#
+# `pull_request` is listed as well, but only fires usefully for PRs from forks:
+# for a branch in this repo the push event already covers it, and running both
+# would double every job. The `if` on each job enforces that.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # Supersede in-flight runs for the same branch/PR; a newer commit makes the
+  # older result irrelevant.
+  group: tests-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pc:
+    name: PC tests (${{ matrix.os }}, py${{ matrix.python-version }})
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Listed explicitly rather than as a cross product, because
+        # macos-latest is arm64 and actions/python-versions ships no arm64 build
+        # of 3.9 -- that cell could never pass, and as a required check it would
+        # block every merge. 3.9 (our minimum, per requires-python) is covered on
+        # Linux and Windows instead.
+        #
+        # All three OSes are here because the USB handoff genuinely differs by
+        # platform: Windows re-enumerates the chip at the same bus address where
+        # Linux does not. These jobs use a simulated device, but the surrounding
+        # code paths are still worth exercising per platform.
+        include:
+          - { os: ubuntu-latest, python-version: "3.9" }
+          - { os: ubuntu-latest, python-version: "3.12" }
+          - { os: windows-latest, python-version: "3.9" }
+          - { os: windows-latest, python-version: "3.12" }
+          - { os: macos-latest, python-version: "3.12" }
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # setuptools_scm derives the version from tags
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pytest
+
+      - name: Run PC tests
+        # Hardware tests are deselected by pyproject's addopts; no board needed.
+        run: pytest -v
+
+  lint:
+    name: Format check
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install black isort
+      # Scoped to the package and the tests on purpose. src/gui/ holds gigabytes
+      # of gitignored PyInstaller output on a dev machine, and walking it makes
+      # these take minutes; its sources were also never black-formatted, so
+      # including them here would fail on pre-existing code.
+      - name: black
+        run: black --check --line-length=120 src/k230_flash tests
+      - name: isort
+        run: isort --check-only --profile=black --line-length=120 src/k230_flash tests
+
+  hardware:
+    name: Hardware tests (self-hosted rig)
+    # Opt-in only: needs a real K230 on a board-control rig, so it never runs on
+    # GitHub's shared runners. Point a self-hosted runner with the `k230-rig`
+    # label at a board and trigger this manually (or add a schedule).
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, k230-rig]
+    env:
+      # Configure these on the runner (repository variables or the runner env)
+      # rather than here, so the rig's wiring is not baked into the repo.
+      K230_TEST_PORT: ${{ vars.K230_TEST_PORT }}
+      K230_TEST_MEDIA: ${{ vars.K230_TEST_MEDIA }}
+      K230_BOARD_SCRIPTS: ${{ vars.K230_BOARD_SCRIPTS }}
+      K230_BOARD_NAME: ${{ vars.K230_BOARD_NAME }}
+      K230_OWNER: github-actions
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pytest
+
+      - name: Run hardware tests
+        # These overwrite the board's storage. --hardware opts in; without it the
+        # tests skip rather than fail.
+        run: pytest --hardware -m hardware -v
