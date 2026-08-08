@@ -532,8 +532,16 @@ class K230UBOOTBurner(KBurner):
                 f"响应命令不匹配: 得到 0x{resp_cmd:04x}, 期望 0x{(cmd | CMD_FLAG_DEV_TO_HOST):04x}"
             )
         if resp_result != KBURN_RESULT_OK and cmd != KBURN_CMD_NONE:
-            logger.error(f"send_cmd: response error, result = 0x{resp_result:04X}")
-            raise USBCommunicationError(f"设备响应错误: 0x{resp_result:04X}, 请检查目标存储介质是否存在？")
+            # On failure the device puts a human-readable reason in the data area
+            # ("DATA SIZE EXCEED", "MEDIUM INFO INVALID", "PROBE FAILED", ...).
+            # Dropping it left the user with a bare result code and a guess about
+            # the storage medium, which was wrong as often as it was right.
+            reason = (
+                bytes(response[HEADER_SIZE : HEADER_SIZE + resp_data_size]).decode("utf-8", errors="ignore").strip()
+            )
+            logger.error(f"send_cmd: response error, result = 0x{resp_result:04X}, message = {reason!r}")
+            detail = f": {reason}" if reason else "，请检查目标存储介质是否存在？"
+            raise USBCommunicationError(f"设备响应错误 0x{resp_result:04X}{detail}")
         if resp_data_size != expected_response_length:
             logger.error(
                 f"send_cmd: response data size mismatch, expected {expected_response_length}, got {resp_data_size}"

@@ -22,6 +22,9 @@ from .usb_utils import (
 # How long to wait for the loader to re-enumerate as a U-Boot-stage device, and
 # how many times to re-push the loader if the chip never gets there.
 LOADER_ENUMERATION_TIMEOUT = 15.0
+# How long to look for the chip back in BootROM before concluding the loader did
+# not merely fail to start but that the device is gone entirely.
+LOADER_FALLBACK_TIMEOUT = 5.0
 LOADER_BOOT_ATTEMPTS = 3
 
 
@@ -108,7 +111,9 @@ def _boot_loader_and_wait(dev, port_path, media_type, loader_file, loader_addres
             # If the chip fell back into BootROM the loader simply did not take;
             # re-push it. If it is not there either, give up with the original error.
             try:
-                dev, port_path = wait_for_device_mode(port_path, KBURN_USB_DEV_BROM, timeout=5.0, refresh_backend=True)
+                dev, port_path = wait_for_device_mode(
+                    port_path, KBURN_USB_DEV_BROM, timeout=LOADER_FALLBACK_TIMEOUT, refresh_backend=True
+                )
                 logger.info("设备重新回到 BootROM 模式，重试载入 loader")
             except TimeoutError:
                 break
