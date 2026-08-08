@@ -62,7 +62,72 @@ jobs:
 
       - name: Run PC tests
         # Hardware tests are deselected by pyproject's addopts; no board needed.
-        run: pytest -v
+        # JUnit XML so the next step can report results on the run page instead
+        # of leaving them buried in a job log.
+        run: pytest -v --junitxml=junit-${{ matrix.os }}-py${{ matrix.python-version }}.xml
+
+      - name: Summarise results
+        # Runs even when the tests fail -- that is precisely when the summary is
+        # worth having. Pure stdlib so it behaves the same on all three runners.
+        if: always()
+        shell: python
+        run: |
+          import glob, os, xml.etree.ElementTree as ET
+
+          rows, failures, names = [], [], []
+          for path in sorted(glob.glob("junit-*.xml")):
+              root = ET.parse(path).getroot()
+              suites = root.iter("testsuite") if root.tag == "testsuites" else [root]
+              for s in suites:
+                  total = int(s.get("tests", 0))
+                  fail = int(s.get("failures", 0)) + int(s.get("errors", 0))
+                  skip = int(s.get("skipped", 0))
+                  rows.append((total - fail - skip, fail, skip, total, float(s.get("time", 0))))
+                  for case in s.iter("testcase"):
+                      cls = (case.get("classname") or "").replace(".", "/")
+                      name = f"{cls}::{case.get('name')}"
+                      bad = case.find("failure") is not None or case.find("error") is not None
+                      names.append(("FAIL" if bad else "ok", name))
+                      if bad:
+                          node = case.find("failure") if case.find("failure") is not None else case.find("error")
+                          failures.append((name, (node.get("message") or "").strip()[:300]))
+
+          passed = sum(r[0] for r in rows); failed = sum(r[1] for r in rows)
+          skipped = sum(r[2] for r in rows); seconds = sum(r[4] for r in rows)
+          verdict = "all green" if failed == 0 else f"{failed} failing"
+
+          out = []
+          out.append(f"## ${{ matrix.os }} / Python ${{ matrix.python-version }} — {verdict}\n")
+          out.append("| passed | failed | skipped | total | time |")
+          out.append("|---:|---:|---:|---:|---:|")
+          out.append(f"| {passed} | {failed} | {skipped} | {passed + failed + skipped} | {seconds:.1f}s |\n")
+
+          if failures:
+              out.append("### Failures\n")
+              for name, message in failures:
+                  out.append(f"**`{name}`**\n\n```\n{message}\n```\n")
+
+          out.append(f"<details><summary>All {len(names)} test cases</summary>\n")
+          current = None
+          for status, name in names:
+              path = name.split("::")[0]
+              if path != current:
+                  current = path
+                  out.append(f"\n**{path}**\n")
+              mark = "x" if status == "ok" else " "
+              out.append(f"- [{mark}] `{name.split('::', 1)[-1]}`")
+          out.append("\n</details>")
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
+              fh.write("\n".join(out) + "\n")
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: junit-*.xml
+          if-no-files-found: warn
 
   lint:
     name: Format check
