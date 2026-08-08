@@ -18,18 +18,20 @@ class MultiModeAction(argparse.Action):
     """
 
     def __call__(self, parser, namespace, values, option_string=None):
+        # Record the raw positionals too. argparse only fills `dest` when the
+        # action does it itself, so without this `args.files` stays None even
+        # when positionals were supplied, which is confusing for anything
+        # inspecting the namespace.
+        setattr(namespace, self.dest, values)
+
         # If there is only one argument, check if it ends with .kdimg
         if len(values) == 1:
             original_path = Path(values[0])
             extracted_path = extract_if_compressed(original_path)
             if not extracted_path.suffix == ".kdimg":
-                parser.error(
-                    f"Error: {original_path} (extracted to {extracted_path}) is not a .kdimg file"
-                )
+                parser.error(f"Error: {original_path} (extracted to {extracted_path}) is not a .kdimg file")
             setattr(namespace, "kdimg_file", extracted_path)  # Parse as Path
-            setattr(
-                namespace, "addr_filename_pairs", None
-            )  # Set the other mode to None
+            setattr(namespace, "addr_filename_pairs", None)  # Set the other mode to None
             return
 
         # Otherwise, parse as [address, .img] pairs
@@ -46,9 +48,7 @@ class MultiModeAction(argparse.Action):
             original_path = Path(values[i + 1])
             extracted_path = extract_if_compressed(original_path)
             if not extracted_path.suffix == ".img":
-                parser.error(
-                    f"Error: {original_path} (extracted to {extracted_path}) is not an .img file"
-                )
+                parser.error(f"Error: {original_path} (extracted to {extracted_path}) is not an .img file")
 
             pairs.append((address, extracted_path))
 
@@ -88,9 +88,7 @@ def parse_arguments(args_list=None):
         ),
     )
 
-    parser.add_argument(
-        "-l", "--list-devices", action="store_true", help="List available USB devices"
-    )
+    parser.add_argument("-l", "--list-devices", action="store_true", help="List available USB devices")
 
     parser.add_argument(
         "-d",
@@ -124,9 +122,7 @@ def parse_arguments(args_list=None):
         help="Media type: EMMC, SDCARD, SPI_NAND, SPI_NOR, OTP",
     )
 
-    parser.add_argument(
-        "--auto-reboot", action="store_true", help="Reboot automatically after writing"
-    )
+    parser.add_argument("--auto-reboot", action="store_true", help="Reboot automatically after writing")
 
     parser.add_argument(
         "--device-timeout",
@@ -170,5 +166,15 @@ def parse_arguments(args_list=None):
         args = parser.parse_args(args_list)
     else:
         args = parser.parse_args()
+
+    # Nothing to do: no image to write and nothing queried. Fail with usage
+    # rather than exiting 0 having done nothing -- an automation script that
+    # dropped its arguments should not look like a successful flash.
+    if (
+        not args.list_devices
+        and not getattr(args, "kdimg_file", None)
+        and not getattr(args, "addr_filename_pairs", None)
+    ):
+        parser.error("nothing to do: pass an image to flash, or use --list-devices")
 
     return args

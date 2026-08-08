@@ -6,17 +6,10 @@ Instructions:
 - To run the test: execute the `pytest src/k230_flash/tests` command in the project root directory (`k230-flash/`).
 """
 
-import sys
 from pathlib import Path
 
 import pytest
 
-# Add the src directory to sys.path to resolve ModuleNotFoundError
-src_path = str(Path(__file__).parent.parent.parent)
-if src_path not in sys.path:
-    sys.path.insert(0, src_path)
-
-# Since the test file is inside a package, it can be imported directly
 from k230_flash.arg_parser import parse_arguments
 
 

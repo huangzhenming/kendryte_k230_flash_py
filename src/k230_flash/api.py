@@ -11,11 +11,21 @@ from .usb_utils import (
     KBURN_USB_DEV_BROM,
     KBURN_USB_DEV_UBOOT,
     detect_device_type,
+    device_identity,
     find_device,
     init_device,
     list_usb_devices,
-    refresh_pyusb_after_reboot,
+    release_device,
+    wait_for_device_mode,
 )
+
+# How long to wait for the loader to re-enumerate as a U-Boot-stage device, and
+# how many times to re-push the loader if the chip never gets there.
+LOADER_ENUMERATION_TIMEOUT = 15.0
+# How long to look for the chip back in BootROM before concluding the loader did
+# not merely fail to start but that the device is gone entirely.
+LOADER_FALLBACK_TIMEOUT = 5.0
+LOADER_BOOT_ATTEMPTS = 3
 
 
 def list_devices(vid=0x29F1, pid=0x0230, log_level="INFO"):
@@ -40,6 +50,75 @@ def list_devices(vid=0x29F1, pid=0x0230, log_level="INFO"):
         for dev in devices
     ]
     return json.dumps(device_list, indent=4, ensure_ascii=False)
+
+
+def _boot_loader_and_wait(dev, port_path, media_type, loader_file, loader_address, progress_callback):
+    """Push the loader over BootROM and wait for it to come back as U-Boot stage.
+
+    Starting the loader makes the chip re-enumerate with *different bulk
+    endpoints* (BootROM exposes OUT 0x01, the U-Boot gadget exposes OUT 0x02),
+    so anything still holding the pre-reboot descriptor ends up writing to an
+    endpoint that no longer exists.
+
+    The two platforms differ in a way that matters here:
+
+    * Linux  -- the chip comes back at a new bus address, and libusb notices.
+    * Windows -- it comes back at the *same* address, and libusb's cached
+      context never notices at all: it keeps serving BootROM's descriptor even
+      though EP0 already answers "Uboot Stage". Only a fresh libusb context
+      sees the truth, hence refresh_backend=True below.
+
+    So instead of sleeping a fixed amount and hoping, drive the handoff as an
+    explicit state machine: release the old handle, then poll -- rebuilding
+    libusb's context each round -- until a device answers EP0 as U-Boot stage.
+    If the loader never starts, the chip stays in BootROM and we re-push it.
+
+    Returns (device, port_path) for the U-Boot-stage device.
+    """
+    last_error = None
+
+    for attempt in range(1, LOADER_BOOT_ATTEMPTS + 1):
+        brom_identity = device_identity(dev)  # for logging only
+
+        handle_bootrom_mode(
+            dev=dev,
+            media_type=media_type,
+            loader_file=loader_file,
+            loader_address=loader_address,
+            progress_callback=progress_callback,
+        )
+
+        # The chip is already jumping into the loader; all we owe it is to let
+        # go of the handle. Resetting here would only force a second, competing
+        # re-enumeration on a device that is mid-reboot.
+        release_device(dev)
+        dev = None
+
+        try:
+            dev, port_path = wait_for_device_mode(
+                port_path,
+                KBURN_USB_DEV_UBOOT,
+                timeout=LOADER_ENUMERATION_TIMEOUT,
+                refresh_backend=True,
+            )
+            logger.info("设备已切换至 U-Boot 模式")
+            return dev, port_path
+        except TimeoutError as e:
+            last_error = e
+            if attempt >= LOADER_BOOT_ATTEMPTS:
+                break
+            logger.warning(f"Loader 启动失败（第 {attempt}/{LOADER_BOOT_ATTEMPTS} 次）: {e}")
+            # If the chip fell back into BootROM the loader simply did not take;
+            # re-push it. If it is not there either, give up with the original error.
+            try:
+                dev, port_path = wait_for_device_mode(
+                    port_path, KBURN_USB_DEV_BROM, timeout=LOADER_FALLBACK_TIMEOUT, refresh_backend=True
+                )
+                logger.info("设备重新回到 BootROM 模式，重试载入 loader")
+            except TimeoutError:
+                break
+
+    raise RuntimeError(f"设备未能进入 U-Boot 模式: {last_error}")
 
 
 def _flash_firmware(
@@ -72,48 +151,30 @@ def _flash_firmware(
 
         # Handle BootROM mode
         if dev_type == KBURN_USB_DEV_BROM:
-            handle_bootrom_mode(
+            dev, port_path = _boot_loader_and_wait(
                 dev=dev,
+                port_path=port_path,
                 media_type=media_type,
                 loader_file=loader_file,
                 loader_address=loader_address,
                 progress_callback=progress_callback,
             )
-            
-            try:
-                # 释放旧设备资源，刷新 USB 设备列表
-                dev.reset()  # Reset the device to clear any state
-                usb.util.dispose_resources(dev)
-                dev = None  # Set dev to None after disposing
-                # 刷新 pyusb 以重新枚举设备
-                refresh_pyusb_after_reboot()
-                logger.debug("刷新 pyusb 以重新枚举设备")
-            except Exception as e:
-                pass
-
-            dev, port_path = find_device(port_path=port_path)
-            if dev is None:
-                raise RuntimeError("USB device not found")
-            init_device(dev)
-            # Re-detect device type after flashing
-
-            dev_type = detect_device_type(dev)
+            dev_type = KBURN_USB_DEV_UBOOT
 
         # Handle U-Boot mode
         if dev_type == KBURN_USB_DEV_UBOOT:
             flash_func(dev)
-            # dev.reset()  # Reset the device to clear any state - moved to finally
-            # usb.util.dispose_resources(dev) - moved to finally
-            # dev = None - moved to finally
         else:
             raise RuntimeError("Device is not in a flashable mode")
 
     finally:
-        # Ensure device resources are disposed of, regardless of success or failure
+        # Ensure device resources are disposed of, regardless of success or failure.
+        # release_device also drops the backend-level libusb reference now, which
+        # matters because the handoff may have handed us a device belonging to a
+        # private libusb context (see usb_utils.release_device).
         if dev:
             try:
-                dev.reset()  # Reset the device before disposing
-                usb.util.dispose_resources(dev)
+                release_device(dev)
                 logger.debug("USB device resources disposed.")
             except Exception as e:
                 logger.warning(f"Error disposing USB device resources: {e}")

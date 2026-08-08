@@ -2,17 +2,12 @@
 """
 测试 main.py 中设备等待功能的单元测试
 """
-import os
-import sys
 import time
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-# 添加源码路径到 sys.path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
-from main import _wait_for_device_ready
+from k230_flash.main import _wait_for_device_ready
 
 
 class TestDeviceWait:
@@ -20,7 +15,7 @@ class TestDeviceWait:
 
     def test_wait_for_device_ready_success(self):
         """测试设备等待成功的情况"""
-        with patch("main.find_device") as mock_find_device:
+        with patch("k230_flash.main.find_device") as mock_find_device:
             # 模拟设备找到
             mock_device = MagicMock()
             mock_find_device.return_value = (mock_device, "1-2")
@@ -36,7 +31,7 @@ class TestDeviceWait:
 
     def test_wait_for_device_ready_timeout(self):
         """测试设备等待超时的情况"""
-        with patch("main.find_device") as mock_find_device:
+        with patch("k230_flash.main.find_device") as mock_find_device:
             # 模拟设备一直未找到
             mock_find_device.side_effect = Exception("Device not found")
 
@@ -50,7 +45,7 @@ class TestDeviceWait:
 
     def test_wait_for_device_ready_retry_then_success(self):
         """测试设备等待重试后成功的情况"""
-        with patch("main.find_device") as mock_find_device:
+        with patch("k230_flash.main.find_device") as mock_find_device:
             # 模拟前两次失败，第三次成功
             mock_device = MagicMock()
             mock_find_device.side_effect = [
@@ -71,7 +66,7 @@ class TestDeviceWait:
 
     def test_wait_for_device_ready_parameters(self):
         """测试设备等待函数的参数处理"""
-        with patch("main.find_device") as mock_find_device:
+        with patch("k230_flash.main.find_device") as mock_find_device:
             mock_device = MagicMock()
             mock_find_device.return_value = (mock_device, "test-path")
 
