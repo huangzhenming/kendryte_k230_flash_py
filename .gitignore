@@ -210,3 +210,10 @@ src/gui/dist
 src/gui/build
 *.AppImage
 upload/*
+
+# Claude Code
+CLAUDE.md
+
+# Local-only design/investigation notes. docs/ itself is published documentation;
+# anything under docs/internal/ is working material that stays on this machine.
+docs/internal/

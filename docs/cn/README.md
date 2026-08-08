@@ -120,7 +120,7 @@ k230-flash --list-devices
 
 ## 📖 使用方法 (Usage)
 
-该工具主要支持两种烧录模式。
+该工具支持三种烧录模式。
 
 ### 模式 1: 烧录完整的 `.kdimg` 文件包
 
@@ -132,34 +132,65 @@ k230-flash -m SDCARD /path/to/your/firmware.kdimg
 
 ### 模式 2: 烧录独立的 `.img` 文件
 
-你可以指定一系列 `[地址, 文件路径]` 对，将不同的 `.img` 文件烧录到内存的不同位置。
+你可以指定一系列 `[地址, 文件路径]` 对，将不同的 `.img` 文件烧录到介质的不同位置。
 
 ```bash
 # 格式: k230-flash [地址1] [文件1] [地址2] [文件2] ...
 k230-flash -m SDCARD 0x000000 uboot.img 0x400000 rtt.img
 ```
 
-### 高级选项
+### 模式 3: 只烧录 `.kdimg` 中的部分分区
 
-- **指定设备**: 如果连接了多个设备，使用 `-d` 或 `--device-path` 指定要操作的设备路径。
+用 `--kdimg-select` 指定分区名，只烧录其中几个分区，其余分区保持设备上原有内容不变。适合只更新 uboot 等场景，比重刷整包快很多。
 
-  ```bash
-  k230-flash -d "1-5" firmware.kdimg
-  ```
+```bash
+k230-flash -m SDCARD firmware.kdimg --kdimg-select uboot_spl_a uboot_a
+```
 
-- **指定存储介质**: 使用 `-m` 或 `--media-type` 来指定目标介质，工具会据此选择正确的 loader。默认为 `EMMC`。
+> 传入的 `.img` / `.kdimg` 也可以是 `.zip` / `.gz` / `.tar.gz` / `.tgz` 压缩包，工具会自动解压并取其中第一个镜像文件。
 
-  ```bash
-  k230-flash --media-type SPI_NOR firmware.kdimg
-  ```
+### 完整参数列表
 
-- **自定义 Loader**: 使用 `-lf` 和 `-la` 指定自己的 loader 文件和加载地址。
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `-l, --list-devices` | — | 列出当前已连接的 K230 设备并退出 |
+| `-d, --device-path` | 自动选择第一个 | 指定 USB 端口路径（如 `1-5.3.2`）。指定后工具会轮询等待该设备出现 |
+| `-m, --media-type` | `EMMC` | 目标介质：`EMMC` / `SDCARD` / `SPI_NAND` / `SPI_NOR` / `OTP` |
+| `--kdimg-select` | — | 只烧录 `.kdimg` 中指定名字的分区（可多个） |
+| `-lf, --loader-file` | 内置 loader | 自定义 loader 二进制路径 |
+| `-la, --loader-address` | `0x80360000` | loader 加载地址 |
+| `--auto-reboot` | 关闭 | 烧录完成后自动重启设备 |
+| `--device-timeout` | `300` | 指定 `-d` 时，等待设备出现的超时时间（秒） |
+| `--device-retry-interval` | `1` | 等待设备时的轮询间隔（秒） |
+| `--log-level` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` / `CRITICAL` |
 
-  ```bash
-  k230-flash --loader-file my_loader.bin --loader-address 0x80360000 firmware.kdimg
-  ```
+几个常用例子：
 
-- **自动重启**: 使用 `--auto-reboot` 可以在烧录完成后自动重启设备。
+```bash
+# 多设备时指定要烧录哪一个
+k230-flash -d "1-5" firmware.kdimg
+
+# 烧到 SPI NOR（工具会自动换用对应的 loader）
+k230-flash --media-type SPI_NOR firmware.kdimg
+
+# 使用自定义 loader
+k230-flash --loader-file my_loader.bin --loader-address 0x80360000 firmware.kdimg
+
+# 排查问题时打开详细日志
+k230-flash --log-level DEBUG -m SDCARD firmware.kdimg
+```
+
+### 烧录过程中发生了什么
+
+了解这个流程有助于看懂日志和定位报错——烧录分两个阶段：
+
+1. 设备以烧录模式上电，此时运行的是芯片内固化的 **BootROM**，它只能接收一小段代码，不具备读写存储介质的能力。
+2. 工具把与目标介质匹配的 **loader**（一个裁剪过的 U-Boot）推送到芯片内存并启动它。
+3. loader 启动会让设备**从 USB 上重新枚举**——工具会自动等待并重新识别，这一步通常不到 1 秒，无需人工干预。
+4. 工具通过 loader 探测介质、获取容量，然后写入固件，期间显示实时进度。
+5. 若指定了 `--auto-reboot`，写入完成后设备自动重启进入正常启动流程。
+
+因此日志里出现"等待设备切换至 U-Boot 模式"是正常现象。如果卡在介质探测（提示检查 `-m` 介质类型），通常是 `-m` 与实际硬件不符，或介质未插好。
 
 ---
 

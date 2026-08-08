@@ -120,7 +120,7 @@ If the device is connected, you will see output similar to the following:
 
 ## 📖 Usage
 
-The tool mainly supports two flashing modes.
+The tool supports three flashing modes.
 
 ### Mode 1: Flash Complete `.kdimg` File Package
 
@@ -132,34 +132,65 @@ k230-flash -m SDCARD /path/to/your/firmware.kdimg
 
 ### Mode 2: Flash Independent `.img` Files
 
-You can specify a series of `[address, file path]` pairs to flash different `.img` files to different memory locations.
+You can specify a series of `[address, file path]` pairs to flash different `.img` files to different locations on the media.
 
 ```bash
 # Format: k230-flash [address1] [file1] [address2] [file2] ...
 k230-flash -m SDCARD 0x000000 uboot.img 0x400000 rtt.img
 ```
 
-### Advanced Options
+### Mode 3: Flash Only Selected Partitions of a `.kdimg`
 
-- **Specify Device**: If multiple devices are connected, use `-d` or `--device-path` to specify the device path to operate on.
+Use `--kdimg-select` to write just some of the partitions in a `.kdimg`, leaving the rest of the device untouched. Handy for updating only U-Boot, and much faster than rewriting the whole package.
 
-  ```bash
-  k230-flash -d "1-5" firmware.kdimg
-  ```
+```bash
+k230-flash -m SDCARD firmware.kdimg --kdimg-select uboot_spl_a uboot_a
+```
 
-- **Specify Storage Media**: Use `-m` or `--media-type` to specify the target media, and the tool will select the correct loader accordingly. Default is `EMMC`.
+> The `.img` / `.kdimg` you pass may also be a `.zip` / `.gz` / `.tar.gz` / `.tgz` archive — it is extracted automatically and the first image inside is used.
 
-  ```bash
-  k230-flash --media-type SPI_NOR firmware.kdimg
-  ```
+### Full Option Reference
 
-- **Custom Loader**: Use `-lf` and `-la` to specify your own loader file and load address.
+| Option | Default | Description |
+|---|---|---|
+| `-l, --list-devices` | — | List connected K230 devices and exit |
+| `-d, --device-path` | first device found | USB port path (e.g. `1-5.3.2`). When given, the tool waits for that device to appear |
+| `-m, --media-type` | `EMMC` | Target media: `EMMC` / `SDCARD` / `SPI_NAND` / `SPI_NOR` / `OTP` |
+| `--kdimg-select` | — | Flash only the named partitions from a `.kdimg` (accepts several) |
+| `-lf, --loader-file` | built-in loader | Path to a custom loader binary |
+| `-la, --loader-address` | `0x80360000` | Loader load address |
+| `--auto-reboot` | off | Reboot the device once flashing completes |
+| `--device-timeout` | `300` | With `-d`, how long to wait for the device to appear (seconds) |
+| `--device-retry-interval` | `1` | Polling interval while waiting for the device (seconds) |
+| `--log-level` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` / `CRITICAL` |
 
-  ```bash
-  k230-flash --loader-file my_loader.bin --loader-address 0x80360000 firmware.kdimg
-  ```
+Common examples:
 
-- **Auto Reboot**: Use `--auto-reboot` to automatically restart the device after flashing is complete.
+```bash
+# Pick a specific board when several are connected
+k230-flash -d "1-5" firmware.kdimg
+
+# Flash to SPI NOR (the matching loader is selected automatically)
+k230-flash --media-type SPI_NOR firmware.kdimg
+
+# Use a custom loader
+k230-flash --loader-file my_loader.bin --loader-address 0x80360000 firmware.kdimg
+
+# Verbose logging when troubleshooting
+k230-flash --log-level DEBUG -m SDCARD firmware.kdimg
+```
+
+### What Happens During Flashing
+
+Knowing the flow makes the logs and any errors much easier to read — flashing runs in two stages:
+
+1. The device powers up in flashing mode running the chip's built-in **BootROM**, which can only receive a small piece of code and cannot access storage media on its own.
+2. The tool pushes a **loader** (a trimmed-down U-Boot) matching your target media into chip memory and starts it.
+3. Starting the loader makes the device **re-enumerate on USB**. The tool waits for this and re-detects the device automatically — typically under a second, no user action needed.
+4. Through the loader, the tool probes the media, reads its capacity, and writes the firmware while showing live progress.
+5. With `--auto-reboot`, the device restarts into normal boot once writing finishes.
+
+So a log line about waiting for the device to switch to U-Boot mode is expected. If it stalls at media probing (the error suggests checking `-m`), the media type usually doesn't match the actual hardware, or the media isn't seated properly.
 
 ---
 
