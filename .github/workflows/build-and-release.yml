@@ -84,16 +84,32 @@ jobs:
       # Linux-only breakage came to look like all three platforms being broken.
       fail-fast: false
       matrix:
+        # `label` selects which build step runs and must stay one of
+        # ubuntu/windows/macos; `arch` exists only so the two macOS jobs can be
+        # told apart in artifact names.
+        #
+        # macOS is built twice on purpose. macos-14 and later are Apple Silicon
+        # only, macos-13 is the last free Intel image, and nothing here builds
+        # universal2 binaries -- PyInstaller targets the host architecture. So
+        # simply "upgrading" macos-13 to macos-14 would have dropped Intel Macs
+        # without the artifact name changing to say so.
         include:
         - os: ubuntu-22.04
           label: ubuntu
+          arch: x86_64
           runner: ubuntu-22.04
         - os: windows-2022
           label: windows
+          arch: x86_64
           runner: windows-2022
         - os: macos-13
           label: macos
+          arch: x86_64
           runner: macos-13
+        - os: macos-14
+          label: macos
+          arch: arm64
+          runner: macos-14
     runs-on: ${{ matrix.runner }}
     defaults:
       run:
@@ -357,5 +373,5 @@ jobs:
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         uses: actions/upload-artifact@v4
         with:
-          name: k230_flash_gui-${{ matrix.label }}-${{ env.VERSION }}
+          name: k230_flash_gui-${{ matrix.label }}-${{ matrix.arch }}-${{ env.VERSION }}
           path: upload/*
