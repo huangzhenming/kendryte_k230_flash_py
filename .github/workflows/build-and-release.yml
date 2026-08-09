@@ -335,13 +335,6 @@ jobs:
               echo "PyInstaller构建成功，输出内容:"
               ls -la dist/k230_flash_gui/ | head -10
 
-              # A plain tarball as well as the AppImage. The AppImage carries its
-              # own runtime and mounting machinery, which is one more thing that
-              # can be wrong on a given distro; this is just the PyInstaller
-              # bundle, so the only requirement is a new enough glibc.
-              tar -czf "/workspace/upload/k230_flash_gui-linux-x86_64-${VERSION}.tar.gz" -C dist k230_flash_gui
-              echo "tarball: $(ls -lh /workspace/upload/*.tar.gz)"
-
               # 创建 AppDir
               APPDIR=$(pwd)/AppDir
               rm -rf $APPDIR
@@ -405,8 +398,9 @@ jobs:
       # shipped broken on every current Ubuntu for a while -- it needed
       # libfuse2, which 22.04 stopped installing by default and 24.04 renamed --
       # and nothing in CI noticed, because building an artefact says nothing
-      # about whether it runs. Both artefacts are exercised: the AppImage covers
-      # its runtime and mounting, the tarball covers the bundle itself.
+      # about whether it runs. If the AppImage ever fails here and it is not
+      # obvious whether the runtime or the bundle is at fault,
+      # `./app.AppImage --appimage-extract` separates the two.
       - name: Smoke-test the Linux bundles on other distros
         if: matrix.label == 'ubuntu'
         run: |
@@ -443,7 +437,6 @@ jobs:
 
                 work=$(mktemp -d); cd "$work"
                 cp /upload/*.AppImage ./app.AppImage
-                cp /upload/*.tar.gz  ./bundle.tar.gz
                 chmod +x app.AppImage
 
                 check() {  # $1 = label, $2... = command
@@ -461,8 +454,6 @@ jobs:
                 }
 
                 check AppImage ./app.AppImage
-                tar -xzf bundle.tar.gz
-                check tarball ./k230_flash_gui/k230_flash_gui
               '
             echo "::endgroup::"
           done

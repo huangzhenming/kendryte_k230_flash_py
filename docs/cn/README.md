@@ -292,6 +292,15 @@ if __name__ == "__main__":
 
 您可以从 [GitHub Releases](https://github.com/kendryte/k230_flash_py/releases) 页面下载最新版本的预编译可执行文件。下载后直接运行即可，无需安装 Python 环境。
 
+Linux 下 GUI 是单个 `.AppImage` 文件，加执行权限后直接运行：
+
+```bash
+chmod +x k230_flash_gui-linux-x86_64-*.AppImage
+./k230_flash_gui-linux-x86_64-*.AppImage
+```
+
+它需要 FUSE 来挂载自身，桌面版发行版都自带（`fuse3`；注意**不需要** `libfuse2`）。如果是无头服务器、容器，或者环境不允许挂载，请改用命令行版 —— `pip install k230-flash` —— 那些场景本来也更适合用 CLI。
+
 GUI 工具的详细使用说明请参考 [K230 Flash GUI 使用手册](../../src/gui/k230_flash_gui_zh.md)。
 
 ---
