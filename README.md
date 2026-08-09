@@ -155,7 +155,7 @@ k230-flash -m SDCARD firmware.kdimg --kdimg-select uboot_spl_a uboot_a
 |---|---|---|
 | `-l, --list-devices` | — | List connected K230 devices and exit |
 | `-d, --device-path` | first device found | USB port path (e.g. `1-5.3.2`). When given, the tool waits for that device to appear |
-| `-m, --media-type` | `EMMC` | Target media: `EMMC` / `SDCARD` / `SPI_NAND` / `SPI_NOR` / `OTP` (case-insensitive). `OTP` needs `-lf`, see note below |
+| `-m, --media-type` | `EMMC` | Target media: `EMMC` / `SDCARD` / `SPI_NAND` / `SPI_NOR` / `OTP`. Case, separators and abbreviations are accepted — `spi-nand`, `spinand`, `nand` all mean `SPI_NAND`; `sd` means `SDCARD`. `OTP` needs `-lf`, see note below |
 | `--kdimg-select` | — | Flash only the named partitions from a `.kdimg` (accepts several) |
 | `-lf, --loader-file` | built-in loader | Path to a custom loader binary |
 | `-la, --loader-address` | `0x80360000` | Loader load address |
@@ -201,6 +201,29 @@ code rather than only in the log:
 Arguments are validated **before** the tool starts waiting for a device, so a
 mistyped path or media type fails immediately instead of after the device
 timeout. Failures print a single-line reason rather than a Python traceback.
+
+### Accepted Media Names
+
+`-m` is matched on the separator-free, upper-case form of what you type, so
+case and `-`/`_`/space differences never matter. On top of that a few
+abbreviations are accepted:
+
+| Canonical | Also accepted |
+|---|---|
+| `EMMC` | `emmc` |
+| `SDCARD` | `sdcard`, `sd` |
+| `SPI_NAND` | `spi-nand`, `spinand`, `spi nand`, `nand` |
+| `SPI_NOR` | `spi-nor`, `spinor`, `spi nor`, `nor` |
+| `OTP` | `otp` |
+
+`MMC` is deliberately **not** accepted. eMMC and SD share a loader but send
+different probe bytes, so either guess would be wrong half the time and fail on
+the board with a confusing "no suitable device"; you get
+`did you mean EMMC?` instead. Anything unrecognised is still rejected, with a
+suggestion where one is close enough.
+
+The same normalisation is used by the CLI, the library API and the burners, so
+`k230-flash -m nand` and `flash_kdimg(media_type="nand")` cannot disagree.
 
 ### A Note on `OTP`
 

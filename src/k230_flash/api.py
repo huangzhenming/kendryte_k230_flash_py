@@ -5,7 +5,7 @@ from pathlib import Path
 from loguru import logger
 
 from .burners import handle_bootrom_mode, handle_uboot_mode
-from .constants import DEFAULT_LOADER_ADDRESS, MEDIA_TYPES, USB_PID, USB_VID
+from .constants import DEFAULT_LOADER_ADDRESS, MEDIA_TYPES, USB_PID, USB_VID, normalise_media_type
 from .progress import progress_callback as default_progress_callback
 from .usb_utils import (
     KBURN_USB_DEV_BROM,
@@ -162,10 +162,10 @@ def _normalise_media_type(media_type):
     """
     if not isinstance(media_type, str):
         raise TypeError(f"media_type must be a string, got {type(media_type).__name__}")
-    normalised = media_type.strip().upper()
-    if normalised not in MEDIA_TYPES:
+    canonical = normalise_media_type(media_type)
+    if canonical is None:
         raise ValueError(f"Unsupported media_type: {media_type!r}; choose from {', '.join(MEDIA_TYPES)}")
-    return normalised
+    return canonical
 
 
 def _flash_firmware(

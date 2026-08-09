@@ -173,3 +173,84 @@ def test_gui_media_names_match_the_library(gui_file):
 
     assert values, "expected to find media names in the GUI"
     assert values <= set(MEDIA_TYPES), f"GUI offers media the library rejects: {sorted(values - set(MEDIA_TYPES))}"
+
+
+# --- accepted spellings -------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "written,canonical",
+    [
+        ("EMMC", "EMMC"),
+        ("emmc", "EMMC"),
+        ("eMMC", "EMMC"),
+        ("SDCARD", "SDCARD"),
+        ("sdcard", "SDCARD"),
+        ("SD", "SDCARD"),
+        ("sd", "SDCARD"),
+        ("SPI_NAND", "SPI_NAND"),
+        ("spi_nand", "SPI_NAND"),
+        ("SPINAND", "SPI_NAND"),
+        ("SPI-NAND", "SPI_NAND"),
+        ("spi nand", "SPI_NAND"),
+        ("NAND", "SPI_NAND"),
+        ("SPI_NOR", "SPI_NOR"),
+        ("SPINOR", "SPI_NOR"),
+        ("SPI-NOR", "SPI_NOR"),
+        ("nor", "SPI_NOR"),
+        ("  NOR  ", "SPI_NOR"),
+        ("OTP", "OTP"),
+        ("otp", "OTP"),
+    ],
+)
+def test_media_spellings_normalise(written, canonical):
+    """Separator and case differences are not worth a failed flash. The input is
+    reduced to its separator-free upper-case form, so only real abbreviations
+    need listing."""
+    from k230_flash.constants import normalise_media_type
+
+    assert normalise_media_type(written) == canonical
+
+
+@pytest.mark.parametrize("written", ["nand", "SPI-NOR", "sd", "eMMC", "spi nand"])
+def test_cli_api_and_burner_agree_on_spellings(written, tmp_path, monkeypatch):
+    """All three entry points share one normaliser.
+
+    They have drifted apart before -- the CLI and api once disagreed about
+    whether FW.KDIMG was a valid filename -- and a media type resolving one way
+    for `k230-flash -m nand` and another for flash_kdimg(media_type="nand")
+    would be the same bug with worse consequences: the probe byte differs per
+    medium, so the loader would interrogate the wrong controller.
+    """
+    from k230_flash.api import _normalise_media_type
+    from k230_flash.arg_parser import parse_arguments
+    from k230_flash.constants import normalise_media_type
+
+    (tmp_path / "fw.kdimg").write_bytes(b"\x00" * 64)
+    monkeypatch.chdir(tmp_path)
+
+    expected = normalise_media_type(written)
+    assert parse_arguments(["-m", written, "fw.kdimg"]).media_type == expected
+    assert _normalise_media_type(written) == expected
+    assert K230UBOOTBurner(FakeKburnDevice(), written).media_type == EXPECTED_PROBE_BYTE[expected]
+
+
+def test_mmc_is_refused_rather_than_guessed():
+    """MMC looks like an obvious alias and is deliberately not one.
+
+    eMMC and SD share a loader but send different probe bytes, so either guess
+    is wrong half the time and fails on the board as "no suitable device". A
+    rejection naming the alternatives is the better outcome.
+    """
+    from k230_flash.constants import normalise_media_type
+
+    assert normalise_media_type("MMC") is None
+    assert normalise_media_type("mmc") is None
+
+
+@pytest.mark.parametrize("junk", ["FLOPPY", "", "   ", "SPI", None, 3])
+def test_unknown_media_still_rejected(junk):
+    """Being lenient about spelling must not turn into accepting anything."""
+    from k230_flash.constants import normalise_media_type
+
+    assert normalise_media_type(junk) is None

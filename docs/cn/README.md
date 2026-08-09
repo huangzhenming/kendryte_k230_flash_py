@@ -155,7 +155,7 @@ k230-flash -m SDCARD firmware.kdimg --kdimg-select uboot_spl_a uboot_a
 |---|---|---|
 | `-l, --list-devices` | — | 列出当前已连接的 K230 设备并退出 |
 | `-d, --device-path` | 自动选择第一个 | 指定 USB 端口路径（如 `1-5.3.2`）。指定后工具会轮询等待该设备出现 |
-| `-m, --media-type` | `EMMC` | 目标介质：`EMMC` / `SDCARD` / `SPI_NAND` / `SPI_NOR` / `OTP`（不区分大小写）。`OTP` 需配合 `-lf`，见下方说明 |
+| `-m, --media-type` | `EMMC` | 目标介质：`EMMC` / `SDCARD` / `SPI_NAND` / `SPI_NOR` / `OTP`。大小写、分隔符、常见缩写都接受 —— `spi-nand`、`spinand`、`nand` 都是 `SPI_NAND`，`sd` 就是 `SDCARD`。`OTP` 需配合 `-lf`，见下方说明 |
 | `--kdimg-select` | — | 只烧录 `.kdimg` 中指定名字的分区（可多个） |
 | `-lf, --loader-file` | 内置 loader | 自定义 loader 二进制路径 |
 | `-la, --loader-address` | `0x80360000` | loader 加载地址 |
@@ -198,6 +198,22 @@ python -m k230_flash --list-devices
 | `130` | 被 Ctrl-C 中断 |
 
 参数校验发生在**等待设备之前**，所以路径写错或介质类型拼错会立即失败，不必先等满设备超时。失败时只打印一行原因，不再抛 Python traceback。
+
+### 介质名称的写法
+
+`-m` 会把输入去掉分隔符、转成大写后再匹配，所以大小写和 `-`/`_`/空格的差异从来不影响结果。在此之上还接受几个缩写：
+
+| 规范写法 | 同样接受 |
+|---|---|
+| `EMMC` | `emmc` |
+| `SDCARD` | `sdcard`、`sd` |
+| `SPI_NAND` | `spi-nand`、`spinand`、`spi nand`、`nand` |
+| `SPI_NOR` | `spi-nor`、`spinor`、`spi nor`、`nor` |
+| `OTP` | `otp` |
+
+**`MMC` 故意不接受**：eMMC 和 SD 共用同一个 loader，但发送的探测字节不同，随便猜一个就有一半概率是错的，而且会在板子上表现为难懂的 "no suitable device"。现在你会得到 `did you mean EMMC?` 的提示。无法识别的输入仍然会被拒绝，足够接近时会给出建议。
+
+CLI、库 API、burner 三处用的是同一个归一化函数，所以 `k230-flash -m nand` 和 `flash_kdimg(media_type="nand")` 不可能出现口径不一致。
 
 ### 关于 `OTP`
 

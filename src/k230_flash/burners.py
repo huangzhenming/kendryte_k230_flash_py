@@ -9,7 +9,7 @@ import usb.core
 import usb.util
 from loguru import logger
 
-from .constants import MEDIA_TYPES
+from .constants import MEDIA_TYPES, normalise_media_type
 from .kdimage import get_kdimage_items
 from .kdimg_utils import write_kdimg
 from .usb_utils import EP0_PROG_START, EP0_SET_DATA_ADDRESS, USB_TIMEOUT
@@ -181,7 +181,7 @@ class K230BROMBurner(KBurner):
             "SPI_NOR": "loader_spi_nor.bin",
         }
 
-        media_type_upper = media_type.upper()
+        media_type_upper = normalise_media_type(media_type) or media_type.strip().upper()
         if media_type_upper not in loader_map:
             # OTP lands here: the loader stage can write it, but no
             # loader_otp.bin exists to *boot* from BootROM, so the only way to
@@ -283,10 +283,12 @@ class K230UBOOTBurner(KBurner):
             "SPI_NOR": KBURN_MEDIUM_SPI_NOR,
             "OTP": KBURN_MEDIUM_OTP,
         }
-        media_type_upper = media_type_str.upper()
-        if media_type_upper not in media_map:
+        # Same normalisation as the CLI and the api, so "spi-nand" or "nand"
+        # mean the same thing whichever door a caller came in through.
+        canonical = normalise_media_type(media_type_str)
+        if canonical is None or canonical not in media_map:
             raise ValueError(f"Unsupported media_type: {media_type_str}")
-        self.media_type = media_map[media_type_upper]
+        self.media_type = media_map[canonical]
 
     def reboot(self):
         """

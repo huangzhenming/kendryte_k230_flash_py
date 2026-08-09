@@ -4,7 +4,7 @@ import textwrap
 from difflib import get_close_matches
 from pathlib import Path
 
-from .constants import DEFAULT_LOADER_ADDRESS, MEDIA_TYPES
+from .constants import DEFAULT_LOADER_ADDRESS, MEDIA_ALIASES, MEDIA_TYPES, normalise_media_type
 from .file_utils import extract_if_compressed
 
 # Everything in this module exists to fail *before* main() starts waiting for a
@@ -14,10 +14,12 @@ from .file_utils import extract_if_compressed
 
 
 def _media_type(value):
-    normalised = value.strip().upper()
-    if normalised in MEDIA_TYPES:
-        return normalised
-    hint = get_close_matches(normalised, MEDIA_TYPES, n=1)
+    canonical = normalise_media_type(value)
+    if canonical:
+        return canonical
+    # Suggest against every spelling we accept, not just the canonical names,
+    # so a near-miss on an abbreviation ("NADN") still gets a useful hint.
+    hint = get_close_matches(value.strip().upper(), sorted(MEDIA_ALIASES), n=1)
     suggestion = f" (did you mean {hint[0]}?)" if hint else ""
     raise argparse.ArgumentTypeError(f"invalid media type '{value}'{suggestion}; choose from {', '.join(MEDIA_TYPES)}")
 
@@ -199,7 +201,11 @@ def parse_arguments(args_list=None):
         type=_media_type,
         default="EMMC",
         metavar="MEDIA",
-        help=f"Media type: {', '.join(MEDIA_TYPES)} (default: EMMC)",
+        help=(
+            f"Media type: {', '.join(MEDIA_TYPES)} (default: EMMC). "
+            "Case, separators and common abbreviations are accepted: "
+            "spi-nand / spinand / nand, spi_nor / nor, sd"
+        ),
     )
 
     parser.add_argument("--auto-reboot", action="store_true", help="Reboot automatically after writing")
