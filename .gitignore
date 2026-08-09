@@ -222,3 +222,8 @@ junit-*.xml
 
 # Isolated environment created by ./build.sh --venv for GUI builds.
 .build-venv/
+
+# Generated before each GUI build (build.sh / the release workflow both write
+# it, and the spec bundles it if present). It was committed once by accident
+# and shipped a meaningless version string; it must never be tracked.
+src/gui/version.txt
