@@ -127,6 +127,71 @@ def test_times_out_with_a_useful_message(monkeypatch):
     assert "1-5.3.2" in str(exc.value)
 
 
+# --- what the user sees while the chip reboots --------------------------------
+
+
+def _capture_logs(level):
+    """Collect loguru records at or above `level`. Returns (records, stop)."""
+    from loguru import logger
+
+    records = []
+    sink_id = logger.add(lambda m: records.append(m.record), level=level)
+    return records, lambda: logger.remove(sink_id)
+
+
+def test_probes_during_reenumeration_are_not_logged_as_errors(monkeypatch):
+    """A chip mid-reboot answers EP0 with EIO. That is the expected state here,
+    not a fault.
+
+    Each one used to be logged at ERROR, so a perfectly normal handoff printed a
+    wall of "Failed to probe device: [Errno 5] Input/Output Error" and then,
+    immediately after, "设备已切换至 U-Boot 模式" -- reading as though something
+    had broken and the flash had somehow succeeded anyway.
+    """
+    not_ready = FakeDevice(mode="uboot", address=96, ep0_error=True)
+    ready = FakeDevice(mode="uboot", address=96)
+    patch_find(monkeypatch, [[not_ready], [not_ready], [not_ready], [ready]])
+    errors, stop = _capture_logs("ERROR")
+
+    try:
+        dev, _ = wait_for_device_mode("1-5.3.2", KBURN_USB_DEV_UBOOT, timeout=5, poll_interval=0)
+    finally:
+        stop()
+
+    assert dev is ready, "precondition: the wait still has to succeed"
+    assert errors == [], f"handoff logged errors on the happy path: {[r['message'] for r in errors]}"
+
+
+def test_a_wait_that_times_out_does_report_the_probe_failure(monkeypatch):
+    """The failures are only silenced while there is still time. Once the device
+    genuinely never comes back the reason has to reach the user, or demoting the
+    log level would just be hiding the diagnostic."""
+    never_ready = FakeDevice(mode="uboot", address=96, ep0_error=True)
+    patch_find(monkeypatch, [never_ready])
+
+    with pytest.raises(TimeoutError) as exc:
+        wait_for_device_mode("1-5.3.2", KBURN_USB_DEV_UBOOT, timeout=0.2, poll_interval=0)
+
+    message = str(exc.value)
+    assert "1-5.3.2" in message
+    assert "U-Boot" in message, "the mode should be named, not printed as a bare integer"
+    assert "fake EP0 failure" in message, "the underlying USB error should be carried through"
+
+
+def test_one_shot_probe_still_logs_an_error():
+    """probe_device is used where the device is believed to be ready already
+    (api._flash_firmware, straight after find+init). A failure there is real, so
+    that diagnostic must survive the change above."""
+    errors, stop = _capture_logs("ERROR")
+    try:
+        assert probe_device(FakeDevice(ep0_error=True)) == KBURN_USB_DEV_INVALID
+    finally:
+        stop()
+
+    assert len(errors) == 1
+    assert "Failed to probe device" in errors[0]["message"]
+
+
 def test_rejected_devices_are_released(monkeypatch):
     """Every candidate we do not return must be released while its context is
     still alive, or tearing the context down later crashes the interpreter."""

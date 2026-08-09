@@ -134,24 +134,36 @@ def detect_device_type(dev):
     return dev_type
 
 
+def _read_cpu_info(dev):
+    """Ask EP0 which stage the chip is in. Propagates usb.core.USBError.
+
+    Split out from probe_device so the two callers can treat a failure
+    differently: for a device we believe is ready it is an error worth
+    reporting, while for one we are watching through a reboot it is the normal
+    state of affairs.
+    """
+    info = dev.ctrl_transfer(
+        bmRequestType=usb.util.CTRL_IN | usb.util.CTRL_TYPE_VENDOR | usb.util.CTRL_RECIPIENT_DEVICE,
+        bRequest=EP0_GET_CPU_INFO,
+        wValue=0,
+        wIndex=0,
+        data_or_wLength=32,
+        timeout=USB_TIMEOUT,
+    )
+    info_str = bytes(info).decode("utf-8", errors="ignore").strip()
+    logger.debug(f"设备 CPU 信息: {info_str}")
+    if "Uboot Stage" in info_str:
+        return KBURN_USB_DEV_UBOOT
+    elif "K230" in info_str:
+        return KBURN_USB_DEV_BROM
+    else:
+        return KBURN_USB_DEV_INVALID
+
+
 def probe_device(dev):
+    """Probe a device that is expected to be ready; a failure here is an error."""
     try:
-        info = dev.ctrl_transfer(
-            bmRequestType=usb.util.CTRL_IN | usb.util.CTRL_TYPE_VENDOR | usb.util.CTRL_RECIPIENT_DEVICE,
-            bRequest=EP0_GET_CPU_INFO,
-            wValue=0,
-            wIndex=0,
-            data_or_wLength=32,
-            timeout=USB_TIMEOUT,
-        )
-        info_str = bytes(info).decode("utf-8", errors="ignore").strip()
-        logger.debug(f"设备 CPU 信息: {info_str}")
-        if "Uboot Stage" in info_str:
-            return KBURN_USB_DEV_UBOOT
-        elif "K230" in info_str:
-            return KBURN_USB_DEV_BROM
-        else:
-            return KBURN_USB_DEV_INVALID
+        return _read_cpu_info(dev)
     except usb.core.USBError as e:
         logger.error(f"Failed to probe device: {e}")
         return KBURN_USB_DEV_INVALID
@@ -274,6 +286,7 @@ def wait_for_device_mode(
     backend = None
     next_refresh = 0.0
     dev = entry = None
+    last_error = None  # reported only if we run out of time
 
     try:
         while time.monotonic() < deadline:
@@ -289,17 +302,36 @@ def wait_for_device_mode(
                 dev = entry["device"]
                 probes += 1
                 try:
-                    if probe_device(dev) == expected_type:
+                    # _read_cpu_info, not probe_device: a device that is
+                    # mid-reboot answers EP0 with EIO, and that is the expected
+                    # state here, not a fault. Logging each one at ERROR printed
+                    # a wall of "Failed to probe device: [Errno 5] Input/Output
+                    # Error" during a perfectly normal handoff, immediately
+                    # followed by "设备已切换至 U-Boot 模式" -- which reads as if
+                    # something went wrong and then the flash somehow worked
+                    # anyway. The error is kept and reported only if the wait
+                    # actually times out, where it is genuinely the reason.
+                    if _read_cpu_info(dev) == expected_type:
                         dev.set_configuration()
                         logger.debug(f"设备就绪: {device_identity(dev)}，共探测 {probes} 次")
                         return dev, entry["port_path"]
-                except usb.core.USBError:
-                    pass  # still coming up -- retry
+                except usb.core.USBError as e:
+                    last_error = e
+                    logger.debug(f"设备尚未就绪（第 {probes} 次探测）: {e}")
                 release_device(dev)
             dev = entry = None
             time.sleep(poll_interval)
 
-        raise TimeoutError(f"等待设备 {port_path} 进入模式 {expected_type} 超时（{timeout}s，探测 {probes} 次）")
+        # Only here is a probe failure actually worth showing: the individual
+        # failures above are what a reboot looks like, this is what never
+        # coming back looks like.
+        expected_name = _DEV_TYPE_NAMES.get(expected_type, expected_type)
+        detail = f"，最后一次探测失败: {last_error}" if last_error else ""
+        if probes == 0:
+            detail = "，期间未发现任何匹配的设备"
+        raise TimeoutError(
+            f"等待设备 {port_path} 进入 {expected_name} 模式超时" f"（{timeout}s，探测 {probes} 次）{detail}"
+        )
     finally:
         # Every rejected device was hard-released above, so no unref is pending
         # against these contexts and they can be dropped safely. The device we
