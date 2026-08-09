@@ -229,7 +229,22 @@ jobs:
                 libusb-1.0-0 \
                 libusb-1.0-0-dev \
                 libusb-dev \
-                libgdk-pixbuf2.0-0 libgdk-pixbuf2.0-bin libgdk-pixbuf2.0-dev
+                libgdk-pixbuf2.0-0 libgdk-pixbuf2.0-bin libgdk-pixbuf2.0-dev \
+                libxkbcommon0 libxkbcommon-x11-0 libxcb1 libxcb-cursor0 \
+                libwayland-client0 libwayland-cursor0 libwayland-egl1 libdrm2
+
+              # PyInstaller only bundles a library it can find on the *build*
+              # machine, so what ends up in the artefact depends on what is
+              # installed here. libxkbcommon0 was missing, so the released
+              # bundle referenced it without shipping it and died on a clean
+              # system with "ImportError: libxkbcommon.so.0". A local build was
+              # fine only because that machine happened to have it already.
+              #
+              # NOTE: this whole block is inside bash -c SINGLE QUOTES, so an
+              # apostrophe anywhere in it -- including in a comment -- closes
+              # the string early and the remainder runs on the host runner
+              # instead of in the container. That is exactly how this comment
+              # broke the build once already.
 
               # Python: jammy ships 3.10, which is all this needs
               # (requires-python is >=3.9).
@@ -254,8 +269,11 @@ jobs:
               # pip & 构建工具
               python3 -m pip install --upgrade pip setuptools wheel
 
-              # PySide6 + PyInstaller
-              python3 -m pip install PySide6 pyinstaller
+              # PyInstaller only -- PySide6 comes from requirements.txt below, which
+              # pins it. Installing it unpinned here meant the GUI was built
+              # against whatever PySide6 was current that day rather than the
+              # version the project tests against.
+              python3 -m pip install pyinstaller
 
               # python3 -m pip, not bare pip: with the distro Python the bare
               # entry point can resolve to a different interpreter.
@@ -268,6 +286,20 @@ jobs:
 
               wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O /usr/local/bin/appimagetool
               chmod +x /usr/local/bin/appimagetool
+
+              # The runtime that appimagetool embeds by default dlopen()s
+              # libfuse.so.2, which Ubuntu has not shipped by default since
+              # 22.04 and renamed to libfuse2t64 in 24.04. The result was an
+              # AppImage that refused to start on any current distro with
+              #     dlopen(): error loading libfuse.so.2
+              #     AppImages require FUSE to run.
+              # even though nothing was wrong with the application. The
+              # type2-runtime build is static-pie linked with fuse3 built in
+              # (verified: `not a dynamic executable`, zero references to
+              # libfuse.so.2), so it needs nothing installed on the host.
+              wget -q https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64 \
+                   -O /tmp/appimage-runtime
+              chmod +x /tmp/appimage-runtime
 
               # 验证和确保upload目录存在
               echo "检查upload目录状态:"
@@ -348,7 +380,7 @@ jobs:
               
               # 打包 AppImage
               echo "开始打包AppImage..."
-              if ARCH=x86_64 appimagetool --no-appstream $APPDIR "$OUTPUT_PATH"; then
+              if ARCH=x86_64 appimagetool --no-appstream --runtime-file /tmp/appimage-runtime $APPDIR "$OUTPUT_PATH"; then
                 echo "AppImage创建成功!"
                 ls -la "$OUTPUT_PATH"
               else
@@ -361,7 +393,71 @@ jobs:
                 exit 1
               fi
             '
-      
+
+      # Actually start the thing on distros we do not build on. The AppImage
+      # shipped broken on every current Ubuntu for a while -- it needed
+      # libfuse2, which 22.04 stopped installing by default and 24.04 renamed --
+      # and nothing in CI noticed, because building an artefact says nothing
+      # about whether it runs. If the AppImage ever fails here and it is not
+      # obvious whether the runtime or the bundle is at fault,
+      # `./app.AppImage --appimage-extract` separates the two.
+      - name: Smoke-test the Linux bundles on other distros
+        if: matrix.label == 'ubuntu'
+        run: |
+          set -euo pipefail
+          for image in ubuntu:22.04 ubuntu:24.04 debian:12; do
+            echo "::group::$image"
+            # --device /dev/fuse models a normal desktop; the point of the
+            # static runtime is that no libfuse2 *package* is needed, not that
+            # FUSE itself is gone. Deliberately installing nothing beyond the
+            # bare X-less Qt dependencies -- if the bundle needs more than this,
+            # that is what we want to find out here rather than from a user.
+            docker run --rm --privileged --device /dev/fuse \
+              -v "${{ github.workspace }}/upload:/upload:ro" \
+              -e QT_QPA_PLATFORM=offscreen \
+              "$image" bash -euo pipefail -c '
+                export DEBIAN_FRONTEND=noninteractive
+                apt-get update -qq >/dev/null
+                # Model a desktop, not a bare container. These are libraries any
+                # graphical install already has, and several of them (libGL,
+                # libEGL, libdrm) must come from the host anyway because they
+                # are coupled to the graphics driver and must never be bundled.
+                # fuse3 is here because the static AppImage runtime still needs
+                # the fusermount3 *binary*; what it no longer needs is libfuse2,
+                # and that absence is asserted below -- it is the actual
+                # regression being guarded.
+                apt-get install -y -qq --no-install-recommends \
+                  fuse3 libglib2.0-0 libgl1 libegl1 libdrm2 libdbus-1-3 fontconfig \
+                  libxkbcommon0 libxcb1 libwayland-client0 libwayland-cursor0 libwayland-egl1 \
+                  >/dev/null
+                if dpkg -l | grep -qE "^ii +libfuse2"; then
+                  echo "FAIL: libfuse2 is installed, so this proves nothing"; exit 1
+                fi
+                echo "libfuse2 absent as intended; fusermount3=$(command -v fusermount3 || echo MISSING)"
+
+                work=$(mktemp -d); cd "$work"
+                cp /upload/*.AppImage ./app.AppImage
+                chmod +x app.AppImage
+
+                check() {  # $1 = label, $2... = command
+                  local label=$1; shift
+                  local rc=0
+                  timeout 25 "$@" > out.log 2>&1 || rc=$?
+                  # A GUI that is still alive when timeout fires (124) is the
+                  # success case; anything else means it exited on its own.
+                  if ! grep -q "主窗口已显示" out.log; then
+                    echo "FAIL [$label]: never reached the main window (rc=$rc)"
+                    sed -n 1,40p out.log
+                    return 1
+                  fi
+                  echo "OK   [$label] (rc=$rc)"
+                }
+
+                check AppImage ./app.AppImage
+              '
+            echo "::endgroup::"
+          done
+
       # 上传 release
       - name: Upload GUI Release Asset
         if: startsWith(github.ref, 'refs/tags/')

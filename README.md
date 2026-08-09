@@ -316,6 +316,18 @@ In addition to the command-line tool and Python library, this project also provi
 
 You can download the latest version of pre-compiled executable files from the [GitHub Releases](https://github.com/kendryte/k230_flash_py/releases) page. After downloading, run directly without installing Python environment.
 
+On Linux the GUI ships as a single `.AppImage`; make it executable and run it:
+
+```bash
+chmod +x k230_flash_gui-linux-x86_64-*.AppImage
+./k230_flash_gui-linux-x86_64-*.AppImage
+```
+
+It needs FUSE to mount itself, which every desktop install has (`fuse3`; note
+that `libfuse2` is *not* required). On a headless server, in a container, or
+anywhere mounting is not permitted, use the CLI instead — `pip install
+k230-flash` — which is the better fit for those environments anyway.
+
 For detailed usage instructions of the GUI tool, please refer to [K230 Flash GUI User Manual](src/gui/k230_flash_gui_en.md).
 
 ---
