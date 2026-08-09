@@ -42,9 +42,7 @@ def _handoff(port, media):
         loader_file=None,
         loader_address=0x80360000,
         media_type=media,
-        auto_reboot=False,
         progress_callback=lambda current, total: None,
-        log_level="INFO",
         flash_func=inspect,
     )
     return seen
@@ -109,9 +107,7 @@ def test_loader_reports_a_serial_number(board_in_download_mode, board_port, medi
         loader_file=None,
         loader_address=0x80360000,
         media_type=media_type,
-        auto_reboot=False,
         progress_callback=lambda current, total: None,
-        log_level="INFO",
         flash_func=read_serial,
     )
 

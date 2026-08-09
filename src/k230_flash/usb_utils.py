@@ -6,10 +6,11 @@ import usb.core
 import usb.util
 from loguru import logger
 
+from .constants import USB_PID, USB_VID
+
 # ----------------------------
 # Constant definitions (refer to the original C++ definitions)
 # ----------------------------
-LIBUSB_TIMEOUT = 1000  # 毫秒
 
 # EP0 commands
 EP0_GET_CPU_INFO = 0
@@ -26,7 +27,20 @@ KBURN_USB_DEV_UBOOT = 2
 USB_TIMEOUT = 1000  # 毫秒
 
 
-def list_usb_devices(vid=0x29F1, pid=0x0230, backend=None):
+class DeviceNotFoundError(Exception):
+    """No K230 in flashing mode matched the requested path.
+
+    Raised instead of a bare Exception so the retry loop in main can tell
+    "board is not plugged in yet" (worth waiting for) apart from a programming
+    error (not worth waiting five minutes for).
+    """
+
+
+class DeviceOpenError(Exception):
+    """A device was found but could not be configured for use."""
+
+
+def list_usb_devices(vid=USB_VID, pid=USB_PID, backend=None):
     """Lists all connected K230 USB devices with bus and port paths.
 
     `backend` lets callers enumerate through a private libusb context (see
@@ -58,28 +72,39 @@ def list_usb_devices(vid=0x29F1, pid=0x0230, backend=None):
     return device_list
 
 
-def open_device_by_path(port_path=None, vid=0x29F1, pid=0x0230):
-    """Opens a device by matching the target_path against port_path."""
-    devices = list_usb_devices(vid, pid)
-    for d in devices:
-        # Check against both port_path
-        if port_path and d["port_path"] == port_path:
-            return d["device"]
-    return None
+def open_device_by_path(port_path=None, vid=USB_VID, pid=USB_PID):
+    """Opens a device by matching the target_path against port_path.
+
+    Devices that do not match are released rather than left for the garbage
+    collector: every enumeration hands back live libusb handles, and holding
+    open the ones we rejected is enough to disturb a later re-enumeration.
+    """
+    match = None
+    for entry in list_usb_devices(vid, pid):
+        if match is None and port_path and entry["port_path"] == port_path:
+            match = entry["device"]
+        else:
+            release_device(entry["device"])
+    return match
 
 
 def find_device(port_path=None):
-    """Find and return the USB device"""
+    """Find and return the USB device.
+
+    :raises DeviceNotFoundError: if nothing matches.
+    """
     if port_path:
         dev = open_device_by_path(port_path=port_path)
         if dev is None:
-            raise Exception(f"Device with path port_path:{port_path} not found")
+            raise DeviceNotFoundError(f"Device with port_path {port_path} not found")
     else:
         devices = list_usb_devices()
         if not devices:
-            raise Exception("No USB devices found")
+            raise DeviceNotFoundError("No K230 USB devices found")
         dev = devices[0]["device"]
         port_path = devices[0]["port_path"]
+        for entry in devices[1:]:
+            release_device(entry["device"])
 
     return dev, port_path
 
@@ -90,13 +115,22 @@ def init_device(dev):
         dev.set_configuration()
         return dev
     except usb.core.USBError as e:
-        raise Exception(f"USB device initialization failed: {e}")
+        raise DeviceOpenError(f"USB device initialization failed: {e}") from e
+
+
+_DEV_TYPE_NAMES = {
+    KBURN_USB_DEV_INVALID: "未知/无响应",
+    KBURN_USB_DEV_BROM: "BootROM",
+    KBURN_USB_DEV_UBOOT: "U-Boot (loader)",
+}
 
 
 def detect_device_type(dev):
     """Detect device mode"""
     dev_type = probe_device(dev)
-    logger.info(f"设备模式: {dev_type}")
+    # Logged by name, not as a bare integer: "设备模式: 1" told the user nothing
+    # about which of the two stages the chip was in.
+    logger.info(f"设备模式: {_DEV_TYPE_NAMES.get(dev_type, dev_type)}")
     return dev_type
 
 
@@ -191,7 +225,7 @@ def device_identity(dev):
     return (dev.bus, dev.address)
 
 
-def _iter_matching_devices(port_path, vid=0x29F1, pid=0x0230, backend=None):
+def _iter_matching_devices(port_path, vid=USB_VID, pid=USB_PID, backend=None):
     """Yield device entries on `port_path`, disposing the ones we skip."""
     for entry in list_usb_devices(vid, pid, backend=backend):
         if port_path and entry["port_path"] != port_path:
@@ -207,8 +241,8 @@ def wait_for_device_mode(
     poll_interval=0.05,
     refresh_backend=False,
     refresh_interval=0.2,
-    vid=0x29F1,
-    pid=0x0230,
+    vid=USB_VID,
+    pid=USB_PID,
 ):
     """Wait until a device on `port_path` actually reports `expected_type`.
 

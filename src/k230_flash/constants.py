@@ -11,3 +11,20 @@ else:
 
 LOG_FILE_NAME = "k230_flash.log"
 FULL_LOG_FILE_PATH = BASE_LOG_DIR / LOG_FILE_NAME
+
+# USB identity of a K230 in flashing mode. Both BootROM and the loader stage
+# enumerate under these; the stages are told apart by an EP0 probe, not by IDs.
+# These used to be repeated as default arguments across five functions.
+USB_VID = 0x29F1
+USB_PID = 0x0230
+
+# Storage media the device side understands.
+MEDIA_TYPES = ("EMMC", "SDCARD", "SPI_NAND", "SPI_NOR", "OTP")
+
+# Media reachable from BootROM, i.e. the ones a built-in loader exists for.
+# OTP is a valid target for an already-running loader but there is no
+# loader_otp.bin to boot, so starting from BootROM with -m OTP cannot work.
+MEDIA_TYPES_WITH_LOADER = ("EMMC", "SDCARD", "SPI_NAND", "SPI_NOR")
+
+# Default address the loader is copied to in SRAM before being jumped into.
+DEFAULT_LOADER_ADDRESS = 0x80360000

@@ -155,7 +155,7 @@ k230-flash -m SDCARD firmware.kdimg --kdimg-select uboot_spl_a uboot_a
 |---|---|---|
 | `-l, --list-devices` | — | List connected K230 devices and exit |
 | `-d, --device-path` | first device found | USB port path (e.g. `1-5.3.2`). When given, the tool waits for that device to appear |
-| `-m, --media-type` | `EMMC` | Target media: `EMMC` / `SDCARD` / `SPI_NAND` / `SPI_NOR` / `OTP` |
+| `-m, --media-type` | `EMMC` | Target media: `EMMC` / `SDCARD` / `SPI_NAND` / `SPI_NOR` / `OTP` (case-insensitive). `OTP` needs `-lf`, see note below |
 | `--kdimg-select` | — | Flash only the named partitions from a `.kdimg` (accepts several) |
 | `-lf, --loader-file` | built-in loader | Path to a custom loader binary |
 | `-la, --loader-address` | `0x80360000` | Loader load address |
@@ -180,6 +180,34 @@ k230-flash --loader-file my_loader.bin --loader-address 0x80360000 firmware.kdim
 k230-flash --log-level DEBUG -m SDCARD firmware.kdimg
 ```
 
+The package is also runnable without installing an entry point:
+
+```bash
+python -m k230_flash --list-devices
+```
+
+### Exit Codes and Error Reporting
+
+The tool is meant to be scriptable, so failures are reported through the exit
+code rather than only in the log:
+
+| Code | Meaning |
+|---|---|
+| `0` | Flash completed successfully |
+| `1` | The flash failed (device not found, wrong media, image too large, device reported a write error, …) |
+| `2` | The command line was rejected (bad option, missing file, unknown media type) |
+| `130` | Interrupted with Ctrl-C |
+
+Arguments are validated **before** the tool starts waiting for a device, so a
+mistyped path or media type fails immediately instead of after the device
+timeout. Failures print a single-line reason rather than a Python traceback.
+
+### A Note on `OTP`
+
+`OTP` is a valid target for a loader that is already running, but no OTP loader
+ships with the tool, so it cannot be reached from BootROM with `-m OTP` alone —
+pass `-lf/--loader-file` with a loader that supports it.
+
 ### What Happens During Flashing
 
 Knowing the flow makes the logs and any errors much easier to read — flashing runs in two stages:
@@ -203,7 +231,8 @@ import sys
 from loguru import logger
 from k230_flash import flash_kdimg, flash_addr_file_pairs, list_devices
 
-# Configure logging to see detailed output
+# Configure logging to see detailed output. The library never reconfigures
+# logging itself, so this is the only place log levels are decided.
 logger.remove()
 logger.add(sys.stderr, level="INFO")
 
@@ -240,6 +269,17 @@ def main():
 if __name__ == "__main__":
     main()
 ```
+
+Notes on the library API:
+
+- Paths may be `str` or `pathlib.Path`; both are accepted everywhere.
+- Arguments are validated before any hardware is touched — an unknown
+  `media_type`, a missing file or an empty `addr_filename_pairs` raises
+  immediately rather than after the loader has been pushed to the board.
+- `list_devices()` returns pre-serialised JSON because the CLI prints it
+  verbatim. Use `k230_flash.api.find_devices()` to get a list of dicts instead.
+- The `log_level` argument these functions used to accept never had any effect
+  and is deprecated; configure loguru yourself as shown above.
 
 ---
 

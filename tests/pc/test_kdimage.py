@@ -9,16 +9,7 @@ import hashlib
 import pytest
 from helpers.kdimg_builder import Partition, build_kdimg, write_kdimg_file
 
-from k230_flash.kdimage import KburnKdImage, get_kdimage_items, get_kdimage_max_offset
-
-
-@pytest.fixture(autouse=True)
-def _reset_singleton():
-    """kdimage.py caches a module-level singleton keyed on nothing at all, so a
-    stale instance would leak between tests and make results order-dependent."""
-    KburnKdImage.deleteInstance()
-    yield
-    KburnKdImage.deleteInstance()
+from k230_flash.kdimage import KburnKdImage, KdimageError, get_kdimage_items, get_kdimage_max_offset
 
 
 @pytest.fixture
@@ -51,6 +42,40 @@ def test_parses_partition_table(tmp_path, two_partitions, version):
     assert second.partSize == 1024
 
 
+def test_parsing_a_second_image_does_not_return_the_first(tmp_path):
+    """The parser used to be a singleton keyed on nothing at all, so the second
+    call handed back the first file's parse -- with the first file's partition
+    names, offsets and content offsets.
+
+    Deliberately no reset fixture: the point is that back-to-back calls in one
+    process are correct on their own. The GUI populates its partition list this
+    way per selected file, and a batch flash writes several images per process,
+    so the stale parse meant flashing the wrong contents entirely.
+    """
+    first = write_kdimg_file(tmp_path / "first.kdimg", [Partition("uboot_a", offset=0x0, data=b"\x11" * 512)])
+    second = write_kdimg_file(tmp_path / "second.kdimg", [Partition("rootfs_b", offset=0x100000, data=b"\x22" * 1024)])
+
+    assert [i.partName for i in get_kdimage_items(first).data] == ["uboot_a"]
+    assert [i.partName for i in get_kdimage_items(second).data] == ["rootfs_b"]
+    # And back again -- a cache that only ever filled once would pass the above
+    # by luck if the order happened to suit it.
+    assert [i.partName for i in get_kdimage_items(first).data] == ["uboot_a"]
+
+
+def test_max_offset_follows_the_image_it_was_asked_about(tmp_path):
+    """Same singleton bug, via the other entry point: the capacity check read
+    whichever image was parsed first."""
+    small = write_kdimg_file(
+        tmp_path / "small.kdimg", [Partition("a", offset=0, data=b"\x00" * 16, size=16, max_size=0x1000)]
+    )
+    large = write_kdimg_file(
+        tmp_path / "large.kdimg", [Partition("b", offset=0, data=b"\x00" * 16, size=16, max_size=0x800000)]
+    )
+
+    assert get_kdimage_max_offset(small) == 0x1000
+    assert get_kdimage_max_offset(large) == 0x800000
+
+
 def test_items_are_sorted_by_offset(tmp_path):
     """write_kdimg walks items in order, so the parser must sort by offset even
     when the table lists partitions out of order."""
@@ -67,7 +92,7 @@ def test_items_are_sorted_by_offset(tmp_path):
 
 def test_read_part_data_returns_payload(tmp_path, two_partitions):
     img = write_kdimg_file(tmp_path / "ok.kdimg", two_partitions)
-    kdimg = KburnKdImage.instance(img)
+    kdimg = KburnKdImage(img)
     items = kdimg.items()
 
     data = kdimg.read_part_data(items.data[0])
@@ -80,7 +105,7 @@ def test_read_part_data_pads_short_payload_with_ff(tmp_path):
     0xFF, so the device is always handed exactly part_size bytes."""
     parts = [Partition("padded", offset=0, data=b"\xa5" * 100, size=256)]
     img = write_kdimg_file(tmp_path / "padded.kdimg", parts)
-    kdimg = KburnKdImage.instance(img)
+    kdimg = KburnKdImage(img)
     items = kdimg.items()
 
     data = kdimg.read_part_data(items.data[0])
@@ -129,15 +154,22 @@ def test_rejects_bad_partition_table_crc(tmp_path, two_partitions):
 def test_read_part_data_rejects_sha_mismatch(tmp_path, two_partitions):
     """The container parses fine; only the payload hash is wrong. Silently
     flashing a partition whose contents do not match its recorded digest would
-    brick a board, so this must fail rather than return the bytes."""
+    brick a board, so this must fail rather than return the bytes.
+
+    It raises rather than returning None so the caller can tell a digest
+    mismatch apart from an unreadable file; both used to collapse into None.
+    """
     img = tmp_path / "bad_sha.kdimg"
     img.write_bytes(build_kdimg(two_partitions, corrupt_sha_of="uboot_spl_a"))
 
-    kdimg = KburnKdImage.instance(img)
+    kdimg = KburnKdImage(img)
     items = kdimg.items()
     assert items is not None, "structure is intact; only the payload digest is wrong"
 
-    assert kdimg.read_part_data(items.data[0]) is None
+    with pytest.raises(KdimageError) as exc:
+        kdimg.read_part_data(items.data[0])
+
+    assert "uboot_spl_a" in str(exc.value)
 
 
 def test_sha_is_computed_over_unpadded_payload(tmp_path):
@@ -147,7 +179,7 @@ def test_sha_is_computed_over_unpadded_payload(tmp_path):
     payload = b"\xa5" * 100
     parts = [Partition("padded", offset=0, data=payload, size=256)]
     img = write_kdimg_file(tmp_path / "padded_sha.kdimg", parts)
-    kdimg = KburnKdImage.instance(img)
+    kdimg = KburnKdImage(img)
     items = kdimg.items()
 
     assert items.data[0].expectedSha256 == hashlib.sha256(payload).hexdigest()

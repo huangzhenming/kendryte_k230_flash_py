@@ -14,14 +14,6 @@ from helpers.board_simulator import UBOOT_EP_OUT, Faults, SimulatedK230, install
 from helpers.kdimg_builder import Partition, write_kdimg_file
 
 from k230_flash import api
-from k230_flash.kdimage import KburnKdImage
-
-
-@pytest.fixture(autouse=True)
-def _reset_kdimg_singleton():
-    KburnKdImage.deleteInstance()
-    yield
-    KburnKdImage.deleteInstance()
 
 
 @pytest.fixture

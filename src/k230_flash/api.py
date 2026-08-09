@@ -1,11 +1,11 @@
 import json
+import warnings
 from pathlib import Path
 
-import usb.core
-import usb.util
 from loguru import logger
 
 from .burners import handle_bootrom_mode, handle_uboot_mode
+from .constants import DEFAULT_LOADER_ADDRESS, MEDIA_TYPES, USB_PID, USB_VID
 from .progress import progress_callback as default_progress_callback
 from .usb_utils import (
     KBURN_USB_DEV_BROM,
@@ -28,28 +28,60 @@ LOADER_FALLBACK_TIMEOUT = 5.0
 LOADER_BOOT_ATTEMPTS = 3
 
 
-def list_devices(vid=0x29F1, pid=0x0230, log_level="INFO"):
+def _warn_if_log_level_passed(log_level):
+    """`log_level` never did anything on any of these functions.
+
+    Configuring loguru is the application's job -- the library reconfiguring a
+    process-wide logger behind its caller's back would be worse than the wart.
+    The parameter stays so existing keyword calls do not break, but it now says
+    so out loud instead of silently ignoring the request.
+    """
+    if log_level is not None:
+        warnings.warn(
+            "log_level has no effect and will be removed; configure loguru in "
+            "your own application instead (see the README library example).",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+
+
+def find_devices(vid=USB_VID, pid=USB_PID):
+    """Return connected K230 devices as a list of plain dicts.
+
+    Prefer this over list_devices() when calling from Python; list_devices()
+    returns pre-serialised JSON because the CLI prints it verbatim.
+    """
+    entries = list_usb_devices(vid, pid)
+    try:
+        return [
+            {
+                "bus": entry["bus"],
+                "address": entry["address"],
+                "port_path": entry["port_path"],
+                "vid": vid,
+                "pid": pid,
+            }
+            for entry in entries
+        ]
+    finally:
+        # Enumerating hands back live device objects. Leaving them to the
+        # garbage collector keeps libusb handles open, which on Windows is
+        # enough to disturb a later re-enumeration.
+        for entry in entries:
+            release_device(entry["device"])
+
+
+def list_devices(vid=USB_VID, pid=USB_PID, log_level=None):
     """
     Lists all connected K230 USB devices
 
     :param vid: USB Vendor ID (default 0x29F1)
     :param pid: USB Product ID (default 0x0230)
-    :param log_level: Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+    :param log_level: deprecated, has no effect
     :return: JSON string of the device list
     """
-    # Set log level
-    devices = list_usb_devices(vid, pid)
-    device_list = [
-        {
-            "bus": dev["bus"],
-            "address": dev["address"],
-            "port_path": dev["port_path"],
-            "vid": vid,
-            "pid": pid,
-        }
-        for dev in devices
-    ]
-    return json.dumps(device_list, indent=4, ensure_ascii=False)
+    _warn_if_log_level_passed(log_level)
+    return json.dumps(find_devices(vid, pid), indent=4, ensure_ascii=False)
 
 
 def _boot_loader_and_wait(dev, port_path, media_type, loader_file, loader_address, progress_callback):
@@ -121,17 +153,35 @@ def _boot_loader_and_wait(dev, port_path, media_type, loader_file, loader_addres
     raise RuntimeError(f"设备未能进入 U-Boot 模式: {last_error}")
 
 
+def _normalise_media_type(media_type):
+    """Reject an unusable media type before any hardware is touched.
+
+    Library callers do not go through the argument parser, so without this the
+    first sign of a typo is a ValueError raised after the device has been
+    found, the loader pushed and the chip re-enumerated.
+    """
+    if not isinstance(media_type, str):
+        raise TypeError(f"media_type must be a string, got {type(media_type).__name__}")
+    normalised = media_type.strip().upper()
+    if normalised not in MEDIA_TYPES:
+        raise ValueError(f"Unsupported media_type: {media_type!r}; choose from {', '.join(MEDIA_TYPES)}")
+    return normalised
+
+
 def _flash_firmware(
     port_path,
     loader_file,
     loader_address,
     media_type,
-    auto_reboot,
     progress_callback,
-    log_level,
     flash_func,
 ):
-    """Helper function to flash firmware."""
+    """Helper function to flash firmware.
+
+    auto_reboot/log_level used to be parameters here too, but the ones that
+    took effect were the ones captured by the flash_func closure, so the copies
+    passed down here were dead weight that read as if they did something.
+    """
     # If no progress callback is provided, use the default one
     if progress_callback is None:
         progress_callback = default_progress_callback
@@ -184,11 +234,11 @@ def flash_addr_file_pairs(
     addr_filename_pairs,
     port_path=None,
     loader_file=None,
-    loader_address=0x80360000,
+    loader_address=DEFAULT_LOADER_ADDRESS,
     media_type="EMMC",
     auto_reboot=False,
     progress_callback=None,
-    log_level="INFO",
+    log_level=None,
 ):
     """
     Flashes multiple firmware files to specified addresses
@@ -200,12 +250,29 @@ def flash_addr_file_pairs(
     :param media_type: Storage media type (EMMC, SDCARD, SPI_NAND, SPI_NOR, OTP)
     :param auto_reboot: Whether to automatically reboot the device after flashing
     :param progress_callback: Progress callback function, receives (current, total) arguments
-    :param log_level: Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+    :param log_level: deprecated, has no effect
     """
-    # Validate file extensions
+    _warn_if_log_level_passed(log_level)
+    media_type = _normalise_media_type(media_type)
+
+    if not addr_filename_pairs:
+        # Writing nothing used to look exactly like a successful flash.
+        raise ValueError("addr_filename_pairs is empty: nothing to flash")
+
+    # Paths are coerced rather than required: the documented signature (and the
+    # README example) passes plain strings, but everything downstream calls
+    # .exists()/.stat(), so a string used to fail with a bare AttributeError --
+    # and only after the loader had already been pushed to the board.
+    pairs = []
     for addr, file_path in addr_filename_pairs:
-        if not Path(file_path).suffix.lower() == ".img":
+        path = Path(file_path)
+        if path.suffix.lower() != ".img":
             raise ValueError(f"File '{file_path}' must be in .IMG format")
+        if not path.exists():
+            raise FileNotFoundError(f"File '{path}' does not exist")
+        if int(addr) < 0:
+            raise ValueError(f"Address must not be negative: {addr}")
+        pairs.append((int(addr), path))
 
     def flash_op(dev):
         handle_uboot_mode(
@@ -213,7 +280,7 @@ def flash_addr_file_pairs(
             media_type=media_type,
             auto_reboot=auto_reboot,
             progress_callback=progress_callback,
-            addr_filename_pairs=addr_filename_pairs,
+            addr_filename_pairs=pairs,
         )
 
     _flash_firmware(
@@ -221,9 +288,7 @@ def flash_addr_file_pairs(
         loader_file=loader_file,
         loader_address=loader_address,
         media_type=media_type,
-        auto_reboot=auto_reboot,
         progress_callback=progress_callback,
-        log_level=log_level,
         flash_func=flash_op,
     )
 
@@ -233,11 +298,11 @@ def flash_kdimg(
     selected_partitions=None,  # New parameter for partition selection
     port_path=None,
     loader_file=None,
-    loader_address=0x80360000,
+    loader_address=DEFAULT_LOADER_ADDRESS,
     media_type="EMMC",
     auto_reboot=False,
     progress_callback=None,
-    log_level="INFO",
+    log_level=None,
 ):
     """
     Flashes a .kdimg file, with optional partition selection or overlay
@@ -250,12 +315,26 @@ def flash_kdimg(
     :param media_type: Storage media type (EMMC, SDCARD, SPI_NAND, SPI_NOR, OTP)
     :param auto_reboot: Whether to automatically reboot the device after flashing
     :param progress_callback: Progress callback function, receives (current, total) arguments
-    :param log_level: Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+    :param log_level: deprecated, has no effect
     """
+    _warn_if_log_level_passed(log_level)
+    media_type = _normalise_media_type(media_type)
+
     # Validate file extension
     kdimg_path = Path(kdimg_file)
     if not kdimg_path.suffix.lower() == ".kdimg":
         raise ValueError(f"File '{kdimg_file}' must be in .KDIMG format")
+    if not kdimg_path.exists():
+        raise FileNotFoundError(f"File '{kdimg_path}' does not exist")
+
+    if selected_partitions is not None:
+        if isinstance(selected_partitions, str):
+            # A bare string would iterate character by character and ask the
+            # image for partitions named "u", "b", "o", ...
+            raise TypeError("selected_partitions must be a list of names, not a single string")
+        selected_partitions = list(selected_partitions)
+        if not selected_partitions:
+            raise ValueError("selected_partitions is empty: pass None to flash every partition")
 
     def flash_op(dev):
         handle_uboot_mode(
@@ -272,8 +351,6 @@ def flash_kdimg(
         loader_file=loader_file,
         loader_address=loader_address,
         media_type=media_type,
-        auto_reboot=auto_reboot,
         progress_callback=progress_callback,
-        log_level=log_level,
         flash_func=flash_op,
     )

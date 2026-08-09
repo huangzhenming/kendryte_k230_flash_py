@@ -122,9 +122,7 @@ def test_flash_firmware_skips_the_handoff_when_already_in_uboot(monkeypatch):
         loader_file=None,
         loader_address=0x80360000,
         media_type="SDCARD",
-        auto_reboot=False,
         progress_callback=None,
-        log_level="INFO",
         flash_func=lambda dev: seen.setdefault("dev", dev),
     )
 
@@ -145,9 +143,7 @@ def test_flash_firmware_releases_the_device_even_when_flashing_raises(monkeypatc
             loader_file=None,
             loader_address=0x80360000,
             media_type="SDCARD",
-            auto_reboot=False,
             progress_callback=None,
-            log_level="INFO",
             flash_func=boom,
         )
 

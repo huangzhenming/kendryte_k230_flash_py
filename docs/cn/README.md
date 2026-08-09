@@ -155,7 +155,7 @@ k230-flash -m SDCARD firmware.kdimg --kdimg-select uboot_spl_a uboot_a
 |---|---|---|
 | `-l, --list-devices` | — | 列出当前已连接的 K230 设备并退出 |
 | `-d, --device-path` | 自动选择第一个 | 指定 USB 端口路径（如 `1-5.3.2`）。指定后工具会轮询等待该设备出现 |
-| `-m, --media-type` | `EMMC` | 目标介质：`EMMC` / `SDCARD` / `SPI_NAND` / `SPI_NOR` / `OTP` |
+| `-m, --media-type` | `EMMC` | 目标介质：`EMMC` / `SDCARD` / `SPI_NAND` / `SPI_NOR` / `OTP`（不区分大小写）。`OTP` 需配合 `-lf`，见下方说明 |
 | `--kdimg-select` | — | 只烧录 `.kdimg` 中指定名字的分区（可多个） |
 | `-lf, --loader-file` | 内置 loader | 自定义 loader 二进制路径 |
 | `-la, --loader-address` | `0x80360000` | loader 加载地址 |
@@ -179,6 +179,29 @@ k230-flash --loader-file my_loader.bin --loader-address 0x80360000 firmware.kdim
 # 排查问题时打开详细日志
 k230-flash --log-level DEBUG -m SDCARD firmware.kdimg
 ```
+
+不装入口脚本时也可以直接用模块方式运行：
+
+```bash
+python -m k230_flash --list-devices
+```
+
+### 退出码与报错方式
+
+本工具面向脚本调用，失败通过退出码体现，而不是只写在日志里：
+
+| 退出码 | 含义 |
+|---|---|
+| `0` | 烧录成功 |
+| `1` | 烧录失败（设备找不到、介质选错、镜像超出容量、设备报告写入错误等） |
+| `2` | 命令行被拒绝（参数错误、文件不存在、介质类型不认识） |
+| `130` | 被 Ctrl-C 中断 |
+
+参数校验发生在**等待设备之前**，所以路径写错或介质类型拼错会立即失败，不必先等满设备超时。失败时只打印一行原因，不再抛 Python traceback。
+
+### 关于 `OTP`
+
+`OTP` 对于已经运行起来的 loader 是合法的目标介质，但工具没有内置 OTP 的 loader，因此单靠 `-m OTP` 无法从 BootROM 进入——需要用 `-lf/--loader-file` 指定一个支持它的 loader。
 
 ### 烧录过程中发生了什么
 

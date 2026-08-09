@@ -204,11 +204,43 @@ def test_write_images_streams_files_without_reading_them_whole(tmp_path, burner)
 
 
 def test_write_images_reports_a_missing_file(tmp_path, burner):
+    """Reported as FileNotFoundError rather than repackaged as a RuntimeError,
+    so a caller can tell "you named a file that isn't there" apart from "the
+    write failed"."""
     burner.probe()
     burner.get_capacity()
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(FileNotFoundError):
         write_images([(0x0, tmp_path / "nope.img")], burner)
+
+
+def test_write_images_rejects_an_empty_file(tmp_path, burner):
+    """A zero-byte image writes nothing and would otherwise be reported as a
+    successful flash."""
+    burner.probe()
+    burner.get_capacity()
+    empty = tmp_path / "empty.img"
+    empty.write_bytes(b"")
+
+    with pytest.raises(ValueError):
+        write_images([(0x0, empty)], burner)
+
+    assert burner.dev.sessions == []
+
+
+def test_write_beyond_capacity_is_refused_before_transferring(tmp_path, burner):
+    """The kdimg path checked capacity; the raw [address, file] path did not, so
+    an oversized image failed as an opaque protocol timeout instead."""
+    burner.probe()
+    burner.get_capacity()
+    img = tmp_path / "huge.img"
+    img.write_bytes(b"\x44" * 4096)
+
+    with pytest.raises(RuntimeError) as exc:
+        write_images([(burner.capacity - 512, img)], burner)
+
+    assert "容量" in str(exc.value)
+    assert burner.dev.sessions == [], "nothing should have been sent"
 
 
 # --- command framing ----------------------------------------------------------
