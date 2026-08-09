@@ -310,6 +310,44 @@ Contributions to this project are welcome!
 │   └── gui/                     # Graphical interface tool
 ```
 
+### Building
+
+`./build.sh` is the single entry point; it mirrors what the release workflow
+does, so you do not have to remember three sets of commands.
+
+```bash
+./build.sh wheel            # sdist + wheel        -> dist/
+./build.sh gui --venv       # GUI bundle           -> src/gui/dist/k230_flash_gui/
+./build.sh gui --appimage   # Linux AppImage       -> dist/   (Docker, like CI)
+./build.sh all              # wheel + GUI
+./build.sh clean            # remove build artefacts
+./build.sh --help
+```
+
+By default it only reports missing dependencies; add `--install-deps` to let it
+install them.
+
+**Use `--venv` for GUI builds.** PyInstaller bundles whatever Qt it can see in
+the environment, so if your interpreter has a second Qt beside PySide6 — a
+conda base with `PyQt6` and `qt6-main` does — you get a bundle whose Qt
+libraries and Qt plugins are different versions. It builds without complaint and
+then refuses to start:
+
+```
+qt.core.plugin.factoryloader: Ignoring QPA plugin due to mismatching Qt versions
+This application failed to start because no Qt platform plugin could be initialized.
+```
+
+`--venv` builds against `requirements.txt` alone in `.build-venv/`. On one conda
+box that was the difference between a 1.2 GB bundle that would not start (400 MB
+of it Intel MKL, dragged in via numpy) and a working 221 MB one. `build.sh`
+warns when it spots a second Qt, and again if the finished bundle is suspiciously
+large.
+
+The AppImage is built inside `docker/Dockerfile.ubuntu2204` rather than natively
+on purpose: it has to link against an older glibc than a current dev box has, or
+it will not start on the distributions it targets.
+
 ### Contributing
 
 1. Fork this repository.

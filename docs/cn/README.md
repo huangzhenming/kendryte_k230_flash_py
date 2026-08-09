@@ -293,6 +293,39 @@ GUI 工具的详细使用说明请参考 [K230 Flash GUI 使用手册](../../src
 │   └── gui/                     # 图形界面工具
 ```
 
+### 构建 (Building)
+
+`./build.sh` 是唯一入口，行为与 release workflow 保持一致，不用再记三套命令。
+
+```bash
+./build.sh wheel            # sdist + wheel     -> dist/
+./build.sh gui --venv       # GUI 包            -> src/gui/dist/k230_flash_gui/
+./build.sh gui --appimage   # Linux AppImage    -> dist/   （走 Docker，同 CI）
+./build.sh all              # wheel + GUI
+./build.sh clean            # 清理构建产物
+./build.sh --help
+```
+
+默认只报告缺失的依赖，加 `--install-deps` 才会真的去装。
+
+**构建 GUI 请加 `--venv`。** PyInstaller 会把它在当前环境里看到的 Qt 一并打包，
+所以只要解释器里除了 PySide6 还有第二套 Qt（conda base 装了 `PyQt6` 和
+`qt6-main` 就是这种情况），打出来的包里 Qt 动态库和 Qt 插件版本就会对不上。
+构建过程不会报错，运行时才启动失败：
+
+```
+qt.core.plugin.factoryloader: Ignoring QPA plugin due to mismatching Qt versions
+This application failed to start because no Qt platform plugin could be initialized.
+```
+
+`--venv` 会在 `.build-venv/` 里只按 `requirements.txt` 装依赖再构建。在一台
+conda 机器上实测：不加是 1.2 GB 且根本起不来（其中 400 MB 是 numpy 带进来的
+Intel MKL），加了是 221 MB 且正常启动。`build.sh` 检测到第二套 Qt 会警告，
+成品体积异常偏大时也会再提醒一次。
+
+AppImage 特意放在 `docker/Dockerfile.ubuntu2204` 里构建而不是本机直接打：它必须
+链接比当前开发机更老的 glibc，否则在目标发行版上起不来。
+
 ### 贡献代码
 
 1. Fork 本仓库。
