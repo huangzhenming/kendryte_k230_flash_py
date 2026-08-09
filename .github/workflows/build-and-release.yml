@@ -36,11 +36,17 @@ jobs:
       - name: Determine version
         id: version
         run: |
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            VERSION="${GITHUB_REF_NAME}-$(git rev-parse --short HEAD)"
-          else
-            VERSION="${GITHUB_REF_NAME}-$(git rev-parse --short HEAD)"
-          fi
+          # Slashes have to go. VERSION ends up in an upload-artifact name,
+          # which rejects "/" outright ("The artifact name is not valid"), and
+          # in the AppImage output filename, where it would silently become a
+          # directory component. Every branch following this project's own
+          # convention has one -- fix/..., feature/... -- so a manual run on
+          # any of them failed at the very last step, after the whole build had
+          # already succeeded.
+          #
+          # Tags and branches were always treated identically here: the two
+          # arms of the old if/else were the same line.
+          VERSION="${GITHUB_REF_NAME//\//-}-$(git rev-parse --short HEAD)"
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "VERSION=$VERSION"
 
@@ -73,6 +79,10 @@ jobs:
 
   gui-release:
     strategy:
+      # Without this the first platform to fail cancels the other two, and
+      # their logs read "The operation was canceled" -- which is how a
+      # Linux-only breakage came to look like all three platforms being broken.
+      fail-fast: false
       matrix:
         include:
         - os: ubuntu-22.04
@@ -115,11 +125,17 @@ jobs:
         id: version
         run: |
           git config --global --add safe.directory $GITHUB_WORKSPACE
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            VERSION="${GITHUB_REF_NAME}-$(git rev-parse --short HEAD)"
-          else
-            VERSION="${GITHUB_REF_NAME}-$(git rev-parse --short HEAD)"
-          fi
+          # Slashes have to go. VERSION ends up in an upload-artifact name,
+          # which rejects "/" outright ("The artifact name is not valid"), and
+          # in the AppImage output filename, where it would silently become a
+          # directory component. Every branch following this project's own
+          # convention has one -- fix/..., feature/... -- so a manual run on
+          # any of them failed at the very last step, after the whole build had
+          # already succeeded.
+          #
+          # Tags and branches were always treated identically here: the two
+          # arms of the old if/else were the same line.
+          VERSION="${GITHUB_REF_NAME//\//-}-$(git rev-parse --short HEAD)"
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "VERSION=$VERSION"
 
@@ -131,10 +147,15 @@ jobs:
           PYTHONUTF8: 1
         run: |
           chcp 65001  # 设置控制台为 UTF-8
-          pip install --upgrade pip
-          pip install pyinstaller
-          pip install -r requirements.txt
-          pip install -e .
+          # python -m pip, not bare pip: on Windows `pip install --upgrade pip`
+          # cannot replace the executable it is running from and logs
+          # "ERROR: To modify pip, please run the following command". pwsh does
+          # not stop on that, so the upgrade silently never happened while the
+          # log carried a red herring for anyone debugging this job.
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller
+          python -m pip install -r requirements.txt
+          python -m pip install -e .
           cd src/gui
           # Create version.txt file
           echo "$env:VERSION" | Out-File -FilePath "version.txt" -Encoding utf8 -NoNewline
@@ -147,10 +168,10 @@ jobs:
         env:
           VERSION: ${{ env.VERSION }}
         run: |
-          pip install --upgrade pip
-          pip install pyinstaller
-          pip install -r requirements.txt
-          pip install -e .
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller
+          python -m pip install -r requirements.txt
+          python -m pip install -e .
           cd src/gui
           # Create version.txt file
           echo "$VERSION" > version.txt
@@ -173,7 +194,7 @@ jobs:
             --user root \
             -v "${{ github.workspace }}:/workspace" \
             -w /workspace \
-            ubuntu:20.04 \
+            ubuntu:22.04 \
             bash -c '
               export DEBIAN_FRONTEND=noninteractive
               export TZ=Etc/UTC
@@ -194,16 +215,25 @@ jobs:
                 libusb-dev \
                 libgdk-pixbuf2.0-0 libgdk-pixbuf2.0-bin libgdk-pixbuf2.0-dev
 
-              # Python 3.11
-              add-apt-repository ppa:deadsnakes/ppa -y
-              apt-get update
-              apt-get install -y python3.11 python3.11-venv python3.11-dev python3.11-distutils
-              curl -sS https://bootstrap.pypa.io/get-pip.py | python3.11
-
-              # 将 python3 指向 3.11（保留 3.8 作为备选）
-              update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.8 1
-              update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 2
-              update-alternatives --set python3 /usr/bin/python3.11
+              # Python: jammy ships 3.10, which is all this needs
+              # (requires-python is >=3.9).
+              #
+              # This used to be ubuntu:20.04 plus python3.11 from the deadsnakes
+              # PPA, and it broke the moment deadsnakes stopped publishing for
+              # focal after 20.04 went EOL. The PPA still resolved -- apt logged
+              # "Hit ... deadsnakes ... focal InRelease" -- it simply no longer
+              # carried python3.11, so the build failed with "Unable to locate
+              # package python3.11" and then "pyinstaller: command not found".
+              # Nothing in this repo changed; the base image rotted underneath.
+              #
+              # Staying on 20.04 was not an option: its own Python is 3.8 and
+              # PySide6 6.8 requires >=3.9. Using the distro Python rather than
+              # a PPA also removes a third party that can drop support again.
+              #
+              # Cost: the AppImage glibc floor moves 2.31 -> 2.35, so it now
+              # needs Ubuntu 22.04+ / Debian 12+ rather than 20.04+.
+              apt-get install -y python3 python3-venv python3-dev python3-pip
+              python3 --version
 
               # pip & 构建工具
               python3 -m pip install --upgrade pip setuptools wheel
@@ -211,10 +241,14 @@ jobs:
               # PySide6 + PyInstaller
               python3 -m pip install PySide6 pyinstaller
 
-              pip install --upgrade pip
-              pip install pyinstaller
-              pip install -r requirements.txt
-              pip install -e .
+              # python3 -m pip, not bare pip: with the distro Python the bare
+              # entry point can resolve to a different interpreter.
+              python3 -m pip install -r requirements.txt
+              python3 -m pip install -e .
+
+              # Fail loudly here rather than 60 lines later at "dist does not
+              # exist", which is how the previous breakage presented.
+              python3 -m PyInstaller --version
 
               wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O /usr/local/bin/appimagetool
               chmod +x /usr/local/bin/appimagetool
@@ -243,7 +277,7 @@ jobs:
                 echo "Created version.txt with default version: dev"
               fi
               
-              pyinstaller --clean -y k230_flash_gui.spec
+              python3 -m PyInstaller --clean -y k230_flash_gui.spec
 
               # 验证PyInstaller构建输出
               if [ ! -d "dist/k230_flash_gui" ]; then
