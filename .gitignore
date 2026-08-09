@@ -219,3 +219,6 @@ CLAUDE.md
 docs/internal/
 # pytest JUnit output (CI artifacts)
 junit-*.xml
+
+# Isolated environment created by ./build.sh --venv for GUI builds.
+.build-venv/

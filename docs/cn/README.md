@@ -155,7 +155,7 @@ k230-flash -m SDCARD firmware.kdimg --kdimg-select uboot_spl_a uboot_a
 |---|---|---|
 | `-l, --list-devices` | — | 列出当前已连接的 K230 设备并退出 |
 | `-d, --device-path` | 自动选择第一个 | 指定 USB 端口路径（如 `1-5.3.2`）。指定后工具会轮询等待该设备出现 |
-| `-m, --media-type` | `EMMC` | 目标介质：`EMMC` / `SDCARD` / `SPI_NAND` / `SPI_NOR` / `OTP` |
+| `-m, --media-type` | `EMMC` | 目标介质：`EMMC` / `SDCARD` / `SPI_NAND` / `SPI_NOR` / `OTP`。大小写、分隔符、常见缩写都接受 —— `spi-nand`、`spinand`、`nand` 都是 `SPI_NAND`，`sd` 就是 `SDCARD`。`OTP` 需配合 `-lf`，见下方说明 |
 | `--kdimg-select` | — | 只烧录 `.kdimg` 中指定名字的分区（可多个） |
 | `-lf, --loader-file` | 内置 loader | 自定义 loader 二进制路径 |
 | `-la, --loader-address` | `0x80360000` | loader 加载地址 |
@@ -179,6 +179,45 @@ k230-flash --loader-file my_loader.bin --loader-address 0x80360000 firmware.kdim
 # 排查问题时打开详细日志
 k230-flash --log-level DEBUG -m SDCARD firmware.kdimg
 ```
+
+不装入口脚本时也可以直接用模块方式运行：
+
+```bash
+python -m k230_flash --list-devices
+```
+
+### 退出码与报错方式
+
+本工具面向脚本调用，失败通过退出码体现，而不是只写在日志里：
+
+| 退出码 | 含义 |
+|---|---|
+| `0` | 烧录成功 |
+| `1` | 烧录失败（设备找不到、介质选错、镜像超出容量、设备报告写入错误等） |
+| `2` | 命令行被拒绝（参数错误、文件不存在、介质类型不认识） |
+| `130` | 被 Ctrl-C 中断 |
+
+参数校验发生在**等待设备之前**，所以路径写错或介质类型拼错会立即失败，不必先等满设备超时。失败时只打印一行原因，不再抛 Python traceback。
+
+### 介质名称的写法
+
+`-m` 会把输入去掉分隔符、转成大写后再匹配，所以大小写和 `-`/`_`/空格的差异从来不影响结果。在此之上还接受几个缩写：
+
+| 规范写法 | 同样接受 |
+|---|---|
+| `EMMC` | `emmc` |
+| `SDCARD` | `sdcard`、`sd` |
+| `SPI_NAND` | `spi-nand`、`spinand`、`spi nand`、`nand` |
+| `SPI_NOR` | `spi-nor`、`spinor`、`spi nor`、`nor` |
+| `OTP` | `otp` |
+
+**`MMC` 故意不接受**：eMMC 和 SD 共用同一个 loader，但发送的探测字节不同，随便猜一个就有一半概率是错的，而且会在板子上表现为难懂的 "no suitable device"。现在你会得到 `did you mean EMMC?` 的提示。无法识别的输入仍然会被拒绝，足够接近时会给出建议。
+
+CLI、库 API、burner 三处用的是同一个归一化函数，所以 `k230-flash -m nand` 和 `flash_kdimg(media_type="nand")` 不可能出现口径不一致。
+
+### 关于 `OTP`
+
+`OTP` 对于已经运行起来的 loader 是合法的目标介质，但工具没有内置 OTP 的 loader，因此单靠 `-m OTP` 无法从 BootROM 进入——需要用 `-lf/--loader-file` 指定一个支持它的 loader。
 
 ### 烧录过程中发生了什么
 
@@ -269,6 +308,39 @@ GUI 工具的详细使用说明请参考 [K230 Flash GUI 使用手册](../../src
 │   ├── k230_flash/              # 核心烧录库
 │   └── gui/                     # 图形界面工具
 ```
+
+### 构建 (Building)
+
+`./build.sh` 是唯一入口，行为与 release workflow 保持一致，不用再记三套命令。
+
+```bash
+./build.sh wheel            # sdist + wheel     -> dist/
+./build.sh gui --venv       # GUI 包            -> src/gui/dist/k230_flash_gui/
+./build.sh gui --appimage   # Linux AppImage    -> dist/   （走 Docker，同 CI）
+./build.sh all              # wheel + GUI
+./build.sh clean            # 清理构建产物
+./build.sh --help
+```
+
+默认只报告缺失的依赖，加 `--install-deps` 才会真的去装。
+
+**构建 GUI 请加 `--venv`。** PyInstaller 会把它在当前环境里看到的 Qt 一并打包，
+所以只要解释器里除了 PySide6 还有第二套 Qt（conda base 装了 `PyQt6` 和
+`qt6-main` 就是这种情况），打出来的包里 Qt 动态库和 Qt 插件版本就会对不上。
+构建过程不会报错，运行时才启动失败：
+
+```
+qt.core.plugin.factoryloader: Ignoring QPA plugin due to mismatching Qt versions
+This application failed to start because no Qt platform plugin could be initialized.
+```
+
+`--venv` 会在 `.build-venv/` 里只按 `requirements.txt` 装依赖再构建。在一台
+conda 机器上实测：不加是 1.2 GB 且根本起不来（其中 400 MB 是 numpy 带进来的
+Intel MKL），加了是 221 MB 且正常启动。`build.sh` 检测到第二套 Qt 会警告，
+成品体积异常偏大时也会再提醒一次。
+
+AppImage 特意放在 `docker/Dockerfile.ubuntu2204` 里构建而不是本机直接打：它必须
+链接比当前开发机更老的 glibc，否则在目标发行版上起不来。
 
 ### 贡献代码
 
