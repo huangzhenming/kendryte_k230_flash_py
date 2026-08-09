@@ -229,7 +229,16 @@ jobs:
                 libusb-1.0-0 \
                 libusb-1.0-0-dev \
                 libusb-dev \
-                libgdk-pixbuf2.0-0 libgdk-pixbuf2.0-bin libgdk-pixbuf2.0-dev
+                libgdk-pixbuf2.0-0 libgdk-pixbuf2.0-bin libgdk-pixbuf2.0-dev \
+                libxkbcommon0 libxkbcommon-x11-0 libxcb1 libxcb-cursor0 \
+                libwayland-client0 libwayland-cursor0 libwayland-egl1 libdrm2
+
+              # PyInstaller only bundles a library it can find on the *build*
+              # machine, so what ends up in the artefact depends on what is
+              # installed here. libxkbcommon0 was missing, so the released
+              # bundle referenced it without shipping it and died on a clean
+              # system with "ImportError: libxkbcommon.so.0". A local build was
+              # fine precisely because the developer's machine had it.
 
               # Python: jammy ships 3.10, which is all this needs
               # (requires-python is >=3.9).
@@ -254,8 +263,11 @@ jobs:
               # pip & 构建工具
               python3 -m pip install --upgrade pip setuptools wheel
 
-              # PySide6 + PyInstaller
-              python3 -m pip install PySide6 pyinstaller
+              # PyInstaller only -- PySide6 comes from requirements.txt below, which
+              # pins it. Installing it unpinned here meant the GUI was built
+              # against whatever PySide6 was current that day rather than the
+              # version the project tests against.
+              python3 -m pip install pyinstaller
 
               # python3 -m pip, not bare pip: with the distro Python the bare
               # entry point can resolve to a different interpreter.
@@ -406,9 +418,22 @@ jobs:
               "$image" bash -euo pipefail -c '
                 export DEBIAN_FRONTEND=noninteractive
                 apt-get update -qq >/dev/null
+                # Model a desktop, not a bare container. These are libraries any
+                # graphical install already has, and several of them (libGL,
+                # libEGL, libdrm) must come from the host anyway because they
+                # are coupled to the graphics driver and must never be bundled.
+                # fuse3 is here because the static AppImage runtime still needs
+                # the fusermount3 *binary*; what it no longer needs is libfuse2,
+                # and that absence is asserted below -- it is the actual
+                # regression being guarded.
                 apt-get install -y -qq --no-install-recommends \
-                  libglib2.0-0 libgl1 libegl1 libdbus-1-3 fontconfig >/dev/null
-                echo "libfuse2 present? $(dpkg -l | grep -c libfuse2 || true) (expected 0)"
+                  fuse3 libglib2.0-0 libgl1 libegl1 libdrm2 libdbus-1-3 fontconfig \
+                  libxkbcommon0 libxcb1 libwayland-client0 libwayland-cursor0 libwayland-egl1 \
+                  >/dev/null
+                if dpkg -l | grep -qE "^ii +libfuse2"; then
+                  echo "FAIL: libfuse2 is installed, so this proves nothing"; exit 1
+                fi
+                echo "libfuse2 absent as intended; fusermount3=$(command -v fusermount3 || echo MISSING)"
 
                 work=$(mktemp -d); cd "$work"
                 cp /upload/*.AppImage ./app.AppImage
