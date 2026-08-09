@@ -238,7 +238,13 @@ jobs:
               # installed here. libxkbcommon0 was missing, so the released
               # bundle referenced it without shipping it and died on a clean
               # system with "ImportError: libxkbcommon.so.0". A local build was
-              # fine precisely because the developer's machine had it.
+              # fine only because that machine happened to have it already.
+              #
+              # NOTE: this whole block is inside bash -c SINGLE QUOTES, so an
+              # apostrophe anywhere in it -- including in a comment -- closes
+              # the string early and the remainder runs on the host runner
+              # instead of in the container. That is exactly how this comment
+              # broke the build once already.
 
               # Python: jammy ships 3.10, which is all this needs
               # (requires-python is >=3.9).
